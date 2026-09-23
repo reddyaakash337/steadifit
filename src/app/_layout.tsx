@@ -7,6 +7,7 @@ import Inter_400Regular from '@expo-google-fonts/inter/400Regular/Inter_400Regul
 import Inter_600SemiBold from '@expo-google-fonts/inter/600SemiBold/Inter_600SemiBold.ttf';
 import Inter_700Bold from '@expo-google-fonts/inter/700Bold/Inter_700Bold.ttf';
 import { AppProvider } from '@/state/AppContext';
+import { AuthProvider } from '@/state/AuthContext';
 import { SteadiifitColors } from '@/constants/theme';
 
 export default function RootLayout() {
@@ -20,31 +21,33 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
   return (
     <SafeAreaProvider>
-      <AppProvider>
-        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: SteadiifitColors.background }, animation: 'slide_from_right' }}>
-          <Stack.Screen name="index" />
-          <Stack.Screen name="onboarding" />
-          <Stack.Screen name="plan-generated" options={{ gestureEnabled: false }} />
-          <Stack.Screen name="plan/customize" />
-          <Stack.Screen name="plan/day/[day]" />
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="workout/[id]" />
-          <Stack.Screen name="active/[id]" />
-          <Stack.Screen name="complete/[id]" />
-          <Stack.Screen name="history/index" />
-          <Stack.Screen name="history/[id]" />
-          <Stack.Screen name="progress/exercise/[id]" />
-          <Stack.Screen name="progress/body-weight" />
-          <Stack.Screen name="exercises/index" />
-          <Stack.Screen name="exercises/[id]" />
-          <Stack.Screen name="nutrition" />
-          <Stack.Screen name="nutrition/add" />
-          <Stack.Screen name="coach" />
-          <Stack.Screen name="settings" />
-          <Stack.Screen name="profile/edit" />
-          <Stack.Screen name="about" />
-        </Stack>
-      </AppProvider>
+      <AuthProvider>
+        <AppProvider>
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: SteadiifitColors.background }, animation: 'slide_from_right' }}>
+            <Stack.Screen name="index" />
+            <Stack.Screen name="onboarding" />
+            <Stack.Screen name="plan-generated" options={{ gestureEnabled: false }} />
+            <Stack.Screen name="plan/customize" />
+            <Stack.Screen name="plan/day/[day]" />
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="workout/[id]" />
+            <Stack.Screen name="active/[id]" />
+            <Stack.Screen name="complete/[id]" />
+            <Stack.Screen name="history/index" />
+            <Stack.Screen name="history/[id]" />
+            <Stack.Screen name="progress/exercise/[id]" />
+            <Stack.Screen name="progress/body-weight" />
+            <Stack.Screen name="exercises/index" />
+            <Stack.Screen name="exercises/[id]" />
+            <Stack.Screen name="nutrition" />
+            <Stack.Screen name="nutrition/add" />
+            <Stack.Screen name="coach" />
+            <Stack.Screen name="settings" />
+            <Stack.Screen name="profile/edit" />
+            <Stack.Screen name="about" />
+          </Stack>
+        </AppProvider>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }
