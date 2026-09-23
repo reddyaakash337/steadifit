@@ -93,7 +93,8 @@ export const workouts: Workout[] = [
 export const workoutById = (id?: string) => workouts.find(item => item.id === id) ?? workouts[0];
 export const exerciseById = (id?: string) => exercises.find(item => item.id === id) ?? exercises[0];
 
-export type PlanDay = { day: number; workoutId: string | null; status: 'upcoming' | 'done' | 'skipped' };
+export type PlannedExercise = { exerciseId: string; sets: number; repRange: string; restSeconds: number };
+export type PlanDay = { day: number; workoutId: string | null; status: 'upcoming' | 'done' | 'skipped'; title?: string; focus?: string; duration?: number; exercises?: PlannedExercise[] };
 export function makePlan(frequency: number): PlanDay[] {
   const patterns: Record<number, (string | null)[]> = {
     2: ['full', null, null, 'full', null, null, null],

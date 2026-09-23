@@ -1,4 +1,5 @@
 import type { BodyWeightEntry, WorkoutHistoryItem } from '@/state/AppContext';
+import { convertWeight } from '@/features/units';
 
 export type CompletedSet = { weight: number; reps: number; completed?: boolean };
 export type ProgressPoint = { date: number; weight: number; reps: number; volume: number };
@@ -16,7 +17,6 @@ export const workoutVolume = (workout: WorkoutHistoryItem) => {
   return fromSets > 0 ? fromSets : safe(workout.volume);
 };
 const safe = (value: number) => Number.isFinite(value) && value > 0 ? value : 0;
-const convertWeight = (value: number, from: 'kg' | 'lb', to: 'kg' | 'lb') => from === to ? value : from === 'kg' ? value * 2.2046226218 : value / 2.2046226218;
 export const sortWorkoutsNewest = (history: WorkoutHistoryItem[], now = new Date()) => [...history].sort((a, b) => workoutTimestamp(b, now) - workoutTimestamp(a, now));
 export const startOfWeek = (date: Date) => { const result = new Date(date); result.setHours(0, 0, 0, 0); result.setDate(result.getDate() - ((result.getDay() + 6) % 7)); return result; };
 export const calculateWeeklyWorkoutCount = (history: WorkoutHistoryItem[], now = new Date()) => { const start = startOfWeek(now).getTime(); return history.filter(item => workoutTimestamp(item, now) >= start && workoutTimestamp(item, now) <= now.getTime()).length; };

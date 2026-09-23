@@ -25,6 +25,8 @@ export default function RootLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="onboarding" />
           <Stack.Screen name="plan-generated" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="plan/customize" />
+          <Stack.Screen name="plan/day/[day]" />
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="workout/[id]" />
           <Stack.Screen name="active/[id]" />
@@ -36,8 +38,11 @@ export default function RootLayout() {
           <Stack.Screen name="exercises/index" />
           <Stack.Screen name="exercises/[id]" />
           <Stack.Screen name="nutrition" />
+          <Stack.Screen name="nutrition/add" />
           <Stack.Screen name="coach" />
           <Stack.Screen name="settings" />
+          <Stack.Screen name="profile/edit" />
+          <Stack.Screen name="about" />
         </Stack>
       </AppProvider>
     </SafeAreaProvider>
