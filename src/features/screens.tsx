@@ -167,7 +167,8 @@ export function WorkoutsScreen() {
 }
 
 export function WorkoutDetailsScreen({ id }: { id: string }) {
-  const workout = workoutById(id); const { state, startWorkout } = useSteadiifit(); const active = state.activeWorkout;
+  const workout = workouts.find(item => item.id === id); const { state, startWorkout } = useSteadiifit(); const active = state.activeWorkout;
+  if (!workout) return <Screen><TopBar title="Workout details" /><Empty title="Workout not found" detail="This workout is not in the library." /><Action title="Browse workouts" onPress={() => router.replace('/(tabs)/workouts')} /></Screen>;
   return <Screen><TopBar title="Workout details" /><Heading>{workout.name}</Heading><Copy>{workout.description}</Copy><View style={s.pills}><Pill>{workout.focus}</Pill><Pill>{workout.difficulty}</Pill><Pill>{workout.duration} min</Pill></View><View style={s.statsRow}><Stat value={`${workout.duration}`} label="Minutes" /><Stat value={`${workout.exerciseIds.length}`} label="Exercises" /></View>
     <SectionTitle title="Exercise list" />{workout.exerciseIds.map(id => { const exercise = exerciseById(id); return <Card key={id} onPress={() => openExercise(id)}><Text style={s.cardTitle}>{exercise.name}</Text><Copy>{exercise.muscle} · {exercise.equipment}</Copy><Text style={s.prescription}>{exercise.sets} sets × {exercise.repRange} reps</Text></Card>; })}
     <Action title={active?.workoutId === workout.id ? 'Resume workout  →' : active ? 'Resume active workout  →' : 'Start workout  →'} onPress={() => { const targetId = active?.workoutId ?? workout.id; if (!active) startWorkout(targetId); router.push({ pathname: '/active/[id]', params: { id: targetId } }); }} />
@@ -177,6 +178,8 @@ export function WorkoutDetailsScreen({ id }: { id: string }) {
 export function ActiveWorkoutScreen({ id }: { id: string }) {
   const { state, startWorkout, startSingleExercise, updateSet, completeSet, setRest, advanceWorkout, skipExercise, togglePause, tickWorkout, discardWorkout } = useSteadiifit();
   const workout = workoutById(id); const session = state.activeWorkout;
+  const exerciseId = id.startsWith('exercise-') ? id.slice('exercise-'.length) : null;
+  const invalidRoute = exerciseId !== null ? !exercises.some(item => item.id === exerciseId) : !workouts.some(item => item.id === id);
   const [sheet, setSheet] = useState<'pause' | 'skip' | 'exit' | 'finish' | null>(null);
   const initializedRoute = useRef<string | null>(null);
   useEffect(() => {
@@ -185,12 +188,14 @@ export function ActiveWorkoutScreen({ id }: { id: string }) {
       if (session.workoutId !== id) router.replace({ pathname: '/active/[id]', params: { id: session.workoutId } });
       return;
     }
+    if (invalidRoute) return;
     if (initializedRoute.current === id) return;
     initializedRoute.current = id;
     if (id.startsWith('exercise-')) startSingleExercise(id.slice('exercise-'.length)); else startWorkout(id);
-  }, [id, session?.workoutId, startWorkout, startSingleExercise]);
+  }, [id, invalidRoute, session?.workoutId, startWorkout, startSingleExercise]);
   useEffect(() => { if (!session || session.paused) return; const timer = setInterval(tickWorkout, 1000); return () => clearInterval(timer); }, [session?.id, session?.paused, tickWorkout]);
   useEffect(() => { if (session?.paused && sheet === null) setSheet('pause'); }, [session?.id, session?.paused, sheet]);
+  if (invalidRoute && !session) return <Screen><TopBar title="Workout unavailable" /><Empty title="Workout not found" detail="This workout or exercise is not in the library." /><Action title="Browse workouts" onPress={() => router.replace('/(tabs)/workouts')} /></Screen>;
   if (!session) return <Screen><TopBar title={workout.name} /><Empty title="Preparing workout" detail="Your session is starting." /></Screen>;
   const workoutName = session.workoutName || workout.name;
   const index = Math.min(session.exerciseIndex, session.exercises.length - 1); const current = session.exercises[index];
@@ -308,7 +313,8 @@ export function ExerciseLibraryScreen() {
 }
 
 export function ExerciseDetailsScreen({ id }: { id: string }) {
-  const exercise = exerciseById(id); const { state, toggleFavorite, startSingleExercise, replaceExercise } = useSteadiifit();
+  const exercise = exercises.find(item => item.id === id); const { state, toggleFavorite, startSingleExercise, replaceExercise } = useSteadiifit();
+  if (!exercise) return <Screen><TopBar title="Exercise details" /><Empty title="Exercise not found" detail="This movement is not in the exercise library." /><Action title="Browse exercises" onPress={() => router.replace('/exercises')} /></Screen>;
   const previous = state.history.find(session => session.exercises.some(item => item.exerciseId === exercise.id && item.sets.length > 0));
   const previousExercise = previous?.exercises.find(item => item.exerciseId === exercise.id && item.sets.length > 0);
   const previousSets = previousExercise?.sets ?? [];
@@ -358,7 +364,8 @@ export function ProgressScreen() {
 }
 
 export function ExerciseProgressScreen({ id }: { id: string }) {
-  const { state } = useSteadiifit(); const exercise = exerciseById(id); const now = new Date(); const progress = calculateExerciseProgress(state.history, id, now, state.units);
+  const { state } = useSteadiifit(); const exercise = exercises.find(item => item.id === id); const now = new Date(); const progress = calculateExerciseProgress(state.history, id, now, state.units);
+  if (!exercise) return <Screen><TopBar title="Exercise progress" /><Empty title="Exercise not found" detail="This movement is not in the exercise library." /><Action title="Browse exercises" onPress={() => router.replace('/exercises')} /></Screen>;
   if (!progress) return <Screen><TopBar title="Exercise progress" /><Heading>{exercise.name}</Heading><Empty title="No performance data yet" detail="Complete this exercise in a workout and its progress will appear here." /></Screen>;
   const weighted = progress.points.some(point => point.weight > 0); const values = progress.points.map(point => weighted ? point.weight : point.reps); const max = Math.max(...values, 1); const floor = Math.min(...values);
   return <Screen><TopBar title="Exercise progress" /><Eyebrow>STRENGTH PROGRESS</Eyebrow><Heading>{exercise.name}</Heading><Copy>Performance from your completed workout history.</Copy><Card style={{ marginTop: 14 }}><Eyebrow>{weighted ? 'PERSONAL RECORD' : 'BEST PERFORMANCE'}</Eyebrow><Text style={s.chartValue}>{progress.bestWeight > 0 ? `${formatWeight(progress.bestWeight, state.units, state.units)} ${state.units}` : 'Bodyweight'} × {progress.bestReps} reps</Text><Copy>{weighted ? 'Best completed weight and reps' : 'Highest completed reps'}</Copy><View style={s.chartArea}>{progress.points.slice(-8).map((point, index) => { const value = weighted ? point.weight : point.reps; const height = max === floor ? 42 : Math.max(18, Math.round((value / max) * 105)); return <View key={`${point.date}-${index}`} style={s.chartColumn}><Text style={s.chartPoint}>{weighted ? formatWeight(value, state.units, state.units) : `${value}r`}</Text><View style={[s.chartBar, { height }]} /><Text style={s.chartDate}>{new Date(point.date).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })}</Text></View>; })}</View><Copy style={{ marginTop: 6 }}>{weighted ? `Weight per session · ${state.units}` : 'Reps per session'}</Copy></Card><View style={s.progressGrid}><ProgressStat label="Sessions" value={`${progress.sessions}`} /><ProgressStat label="Total volume" value={`${Math.round(progress.totalVolume).toLocaleString()} ${state.units}`} /><ProgressStat label="Last performed" value={formatDate(progress.lastPerformed)} /><ProgressStat label="Best reps" value={`${progress.bestReps}`} /></View><SectionTitle title="Session history" />{progress.points.slice().reverse().map((point, index) => <Card key={`${point.date}-${index}`}><Text style={s.cardTitle}>{formatDate(point.date)}</Text><Copy>{point.weight > 0 ? `${formatWeight(point.weight, state.units, state.units)} ${state.units}` : 'Bodyweight'} × {point.reps} reps · {Math.round(point.volume).toLocaleString()} {state.units} volume</Copy></Card>)}</Screen>;
