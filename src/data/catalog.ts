@@ -93,8 +93,6 @@ export const workouts: Workout[] = [
 export const workoutById = (id?: string) => workouts.find(item => item.id === id) ?? workouts[0];
 export const exerciseById = (id?: string) => exercises.find(item => item.id === id) ?? exercises[0];
 
-export type PlannedExercise = { exerciseId: string; sets: number; repRange: string; restSeconds: number };
-export type PlanDay = { day: number; workoutId: string | null; status: 'upcoming' | 'done' | 'skipped'; title?: string; focus?: string; duration?: number; exercises?: PlannedExercise[] };
 export function makePlan(frequency: number): PlanDay[] {
   const patterns: Record<number, (string | null)[]> = {
     2: ['full', null, null, 'full', null, null, null],
@@ -103,5 +101,16 @@ export function makePlan(frequency: number): PlanDay[] {
     5: ['push', 'pull', null, 'legs', 'shoulders', 'full', null],
     6: ['push', 'pull', 'legs', 'shoulders', 'full', 'pull', null],
   };
-  return (patterns[frequency] ?? patterns[4]).map((workoutId, day) => ({ day, workoutId, status: 'upcoming' }));
+  return (patterns[frequency] ?? patterns[4]).map((workoutId, weekday) => ({
+    id: createId(), weekday, day: weekday, workoutId, status: 'upcoming',
+    exercises: workoutId ? (workoutById(workoutId).exerciseIds.map((exerciseId, position) => {
+      const item = exerciseById(exerciseId);
+      return { id: createId(), exerciseId, position, sets: item.sets, repRange: item.repRange, restSeconds: item.restSeconds };
+    })) : [],
+  }));
 }
+import type { PlanDay, PlanExercise } from '@/types/domain';
+import { createId } from '@/utils/ids';
+
+export type { PlanDay } from '@/types/domain';
+export type PlannedExercise = PlanExercise;

@@ -1,9 +1,9 @@
 import { exercises, Exercise, PlanDay, PlannedExercise, workoutById, workouts } from '@/data/catalog';
-import type { Goal, WorkoutHistoryItem } from '@/state/AppContext';
+import type { Goal, PlanPreferences, TrainingFocus, WorkoutHistoryItem } from '@/types/domain';
+import { createId } from '@/utils/ids';
 import { startOfWeek, workoutTimestamp } from '@/features/progress';
 
-export type TrainingFocus = 'Balanced' | 'Full Body' | 'Upper Body' | 'Lower Body' | 'Push' | 'Pull' | 'Legs' | 'Strength' | 'Hypertrophy';
-export type PlanPreferences = { goal: Goal; experience: string; frequency: number; equipment: string; duration: number; focus: TrainingFocus };
+export type { PlanPreferences, TrainingFocus } from '@/types/domain';
 export type PlanDayStatus = 'Rest' | 'Completed' | 'Today' | 'Upcoming' | 'Skipped';
 
 const SCHEDULES: Record<number, (string | null)[]> = {
@@ -20,6 +20,8 @@ const musclesBySplit: Record<string, string[]> = {
 };
 const workoutForSplit: Record<string, string> = { 'Full Body': 'full', 'Upper Body': 'full', 'Lower Body': 'legs', Push: 'push', Pull: 'pull', Legs: 'legs' };
 const frequencyValue = (value: number) => Math.min(6, Math.max(2, Math.round(Number.isFinite(value) ? value : 4)));
+type PlannedPrescription = Omit<PlannedExercise, 'id' | 'position'>;
+const fallbackPlanExerciseIds = new Map<string, string>();
 
 export function equipmentCompatible(exercise: Exercise, selection: string) {
   if (selection === 'Full Gym' || selection === 'Full Gym + Machines') return true;
@@ -33,7 +35,7 @@ export function equipmentCompatible(exercise: Exercise, selection: string) {
 
 const isCompound = (exercise: Exercise) => /bench|squat|deadlift|romanian|row|pulldown|pull-up|shoulder press|overhead press/i.test(exercise.name);
 const targetExerciseCount = (duration: number) => duration <= 30 ? 3 : duration <= 45 ? 5 : duration <= 60 ? 6 : 7;
-const prescriptionFor = (exercise: Exercise, goal: Goal, focus: TrainingFocus): PlannedExercise => {
+const prescriptionFor = (exercise: Exercise, goal: Goal, focus: TrainingFocus): PlannedPrescription => {
   const compound = isCompound(exercise);
   if (goal === 'Get stronger' || focus === 'Strength') return { exerciseId: exercise.id, sets: compound ? 4 : 3, repRange: compound ? '4–6' : '6–8', restSeconds: compound ? 150 : 120 };
   if (focus === 'Hypertrophy' || goal === 'Build muscle') return { exerciseId: exercise.id, sets: compound ? 4 : 3, repRange: compound ? '8–12' : '10–15', restSeconds: 90 };
@@ -42,7 +44,7 @@ const prescriptionFor = (exercise: Exercise, goal: Goal, focus: TrainingFocus): 
   return { exerciseId: exercise.id, sets: exercise.sets, repRange: exercise.repRange, restSeconds: exercise.restSeconds };
 };
 
-export function estimateWorkoutDuration(planExercises: PlannedExercise[], catalog: Exercise[] = exercises) {
+export function estimateWorkoutDuration(planExercises: PlannedPrescription[], catalog: Exercise[] = exercises) {
   if (!planExercises.length) return 0;
   const totalSeconds = planExercises.reduce((total, planned) => {
     const exercise = catalog.find(item => item.id === planned.exerciseId);
@@ -54,7 +56,7 @@ export function estimateWorkoutDuration(planExercises: PlannedExercise[], catalo
   return Math.ceil(totalSeconds / 60);
 }
 
-function chooseExercises(split: string, preferences: PlanPreferences, catalog: Exercise[]): PlannedExercise[] {
+function chooseExercises(split: string, preferences: PlanPreferences, catalog: Exercise[]): PlannedPrescription[] {
   const targetMuscles = musclesBySplit[split] ?? musclesBySplit['Full Body'];
   const candidates = catalog.filter(exercise => equipmentCompatible(exercise, preferences.equipment) && exercise.category === 'Strength' && exercise.primaryMuscles.some(muscle => targetMuscles.includes(muscle)) && (preferences.experience !== 'New to training' || exercise.difficulty !== 'Advanced'));
   const sorted = candidates.slice().sort((a, b) => {
@@ -88,19 +90,26 @@ export function generateWorkoutPlan(preferences: PlanPreferences, catalog: Exerc
     if (!split || preferences.focus === 'Balanced' || preferences.focus === 'Strength' || preferences.focus === 'Hypertrophy') return split;
     return preferences.focus;
   });
-  return schedule.map((split, day) => {
-    if (!split) return { day, workoutId: null, status: 'upcoming' };
-    const planned = chooseExercises(split, preferences, catalog);
+  return schedule.map((split, weekday) => {
+    if (!split) return { id: createId(), weekday, day: weekday, workoutId: null, status: 'upcoming', exercises: [] };
+    const planned = chooseExercises(split, preferences, catalog).map((item, position) => ({ ...item, id: createId(), position }));
     const canonicalId = workoutForSplit[split] ?? 'full';
     const muscleGroups = [...new Set(planned.flatMap(item => catalog.find(exercise => exercise.id === item.exerciseId)?.primaryMuscles ?? []))];
-    return { day, workoutId: canonicalId, status: 'upcoming', title: split, focus: muscleGroups.join(', '), duration: estimateWorkoutDuration(planned, catalog), exercises: planned };
+    return { id: createId(), weekday, day: weekday, workoutId: canonicalId, status: 'upcoming', title: split, focus: muscleGroups.join(', '), duration: estimateWorkoutDuration(planned, catalog), exercises: planned };
   });
 }
 
 export function plannedExercises(day: PlanDay, catalog: Exercise[] = exercises): PlannedExercise[] {
   if (day.exercises) return day.exercises;
   const workout = workouts.find(item => item.id === day.workoutId);
-  return (workout?.exerciseIds ?? []).map(id => { const exercise = catalog.find(item => item.id === id); return exercise ? { exerciseId: exercise.id, sets: exercise.sets, repRange: exercise.repRange, restSeconds: exercise.restSeconds } : null; }).filter((item): item is PlannedExercise => item !== null);
+  return (workout?.exerciseIds ?? []).map((exerciseId, position) => {
+    const exercise = catalog.find(item => item.id === exerciseId);
+    if (!exercise) return null;
+    const cacheKey = `${day.id}:${exercise.id}`;
+    let id = fallbackPlanExerciseIds.get(cacheKey);
+    if (!id) { id = createId(); fallbackPlanExerciseIds.set(cacheKey, id); }
+    return { id, exerciseId: exercise.id, position, sets: exercise.sets, repRange: exercise.repRange, restSeconds: exercise.restSeconds };
+  }).filter((item): item is PlannedExercise => item !== null);
 }
 export function planDayName(day: PlanDay) { return day.title ?? (day.workoutId ? workoutById(day.workoutId).name : 'Rest and recover'); }
 export function planDayFocus(day: PlanDay) { return day.focus ?? (day.workoutId ? workoutById(day.workoutId).focus : 'Recovery'); }
