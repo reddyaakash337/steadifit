@@ -9,11 +9,11 @@ import { Platform } from 'react-native';
 
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    text: '#15140F',
+    background: '#FFFFFF',
+    backgroundElement: '#FAFAF6',
+    backgroundSelected: '#F4EDE3',
+    textSecondary: '#6E6D63',
   },
   dark: {
     text: '#ffffff',
@@ -59,6 +59,11 @@ export const Spacing = {
   four: 24,
   five: 32,
   six: 64,
+} as const;
+
+export const SteadiifitColors = {
+  background: '#FFFFFF', ink: '#15140F', muted: '#6E6D63', line: '#E7E4DA', accent: '#8A5A2E',
+  wash: '#F4EDE3', surface: '#FAFAF6', green: '#3F7A4E', greenWash: '#EAF3EC',
 } as const;
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;

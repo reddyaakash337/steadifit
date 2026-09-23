@@ -1,18 +1,43 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { Stack } from 'expo-router';
+import { useFonts } from 'expo-font';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import BricolageGrotesque_700Bold from '@expo-google-fonts/bricolage-grotesque/700Bold/BricolageGrotesque_700Bold.ttf';
+import BricolageGrotesque_800ExtraBold from '@expo-google-fonts/bricolage-grotesque/800ExtraBold/BricolageGrotesque_800ExtraBold.ttf';
+import Inter_400Regular from '@expo-google-fonts/inter/400Regular/Inter_400Regular.ttf';
+import Inter_600SemiBold from '@expo-google-fonts/inter/600SemiBold/Inter_600SemiBold.ttf';
+import Inter_700Bold from '@expo-google-fonts/inter/700Bold/Inter_700Bold.ttf';
+import { AppProvider } from '@/state/AppContext';
+import { SteadiifitColors } from '@/constants/theme';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
-
-SplashScreen.preventAutoHideAsync();
-
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    BricolageBold: BricolageGrotesque_700Bold,
+    BricolageExtraBold: BricolageGrotesque_800ExtraBold,
+    InterRegular: Inter_400Regular,
+    InterSemiBold: Inter_600SemiBold,
+    InterBold: Inter_700Bold,
+  });
+  if (!fontsLoaded) return null;
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <SafeAreaProvider>
+      <AppProvider>
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: SteadiifitColors.background }, animation: 'slide_from_right' }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="onboarding" />
+          <Stack.Screen name="plan-generated" options={{ gestureEnabled: false }} />
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="workout/[id]" />
+          <Stack.Screen name="active/[id]" />
+          <Stack.Screen name="complete/[id]" />
+          <Stack.Screen name="history/index" />
+          <Stack.Screen name="history/[id]" />
+          <Stack.Screen name="exercises/index" />
+          <Stack.Screen name="exercises/[id]" />
+          <Stack.Screen name="nutrition" />
+          <Stack.Screen name="coach" />
+          <Stack.Screen name="settings" />
+        </Stack>
+      </AppProvider>
+    </SafeAreaProvider>
   );
 }
