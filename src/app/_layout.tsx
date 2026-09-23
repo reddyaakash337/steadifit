@@ -31,6 +31,8 @@ export default function RootLayout() {
           <Stack.Screen name="complete/[id]" />
           <Stack.Screen name="history/index" />
           <Stack.Screen name="history/[id]" />
+          <Stack.Screen name="progress/exercise/[id]" />
+          <Stack.Screen name="progress/body-weight" />
           <Stack.Screen name="exercises/index" />
           <Stack.Screen name="exercises/[id]" />
           <Stack.Screen name="nutrition" />

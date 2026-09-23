@@ -8,19 +8,17 @@ export type ActiveWorkoutSession = {
   id: string; workoutId: string; workoutName: string; startedAt: number; elapsedSeconds: number; paused: boolean;
   exercises: SessionExercise[]; exerciseIndex: number; setIndex: number; restSeconds: number | null; restActive: boolean;
 };
-export type WorkoutHistoryItem = { id: string; workoutId: string; name: string; date: string; completedAt?: number; duration: number; volume: number; personalRecord: boolean; exercises: { exerciseId: string; skipped?: boolean; sets: { weight: number; reps: number; completed?: boolean }[] }[] };
+export type WorkoutHistoryItem = { id: string; workoutId: string; name: string; date: string; completedAt?: number; duration: number; volume: number; units?: 'kg' | 'lb'; personalRecord: boolean; personalRecords?: { exerciseId: string; weight: number; reps: number }[]; exercises: { exerciseId: string; skipped?: boolean; sets: { weight: number; reps: number; completed?: boolean }[] }[] };
+export type BodyWeightEntry = { id: string; recordedAt: number; weight: number; units: 'kg' | 'lb' };
 export type SteadiifitState = {
   name: string; goal: Goal; experience: string; equipment: string; frequency: number; units: 'kg' | 'lb';
-  plan: PlanDay[]; history: WorkoutHistoryItem[]; streak: number; activeWorkout: ActiveWorkoutSession | null; favoriteExerciseIds: string[];
+  plan: PlanDay[]; history: WorkoutHistoryItem[]; bodyWeightEntries: BodyWeightEntry[]; activeWorkout: ActiveWorkoutSession | null; favoriteExerciseIds: string[];
 };
 
 const initialState: SteadiifitState = {
   name: 'Alex', goal: 'Build muscle', experience: 'Some Experience', equipment: 'Full Gym', frequency: 4, units: 'kg',
-  plan: makePlan(4), streak: 6, activeWorkout: null, favoriteExerciseIds: [],
-  history: [
-    { id: 'h1', workoutId: 'pull', name: 'Back + Biceps', date: 'Sep 22', completedAt: Date.now() - 86400000, duration: 48, volume: 4820, personalRecord: true, exercises: [{ exerciseId: 'pulldown', sets: [{ weight: 45, reps: 10, completed: true }] }, { exerciseId: 'row', sets: [{ weight: 50, reps: 8, completed: true }] }] },
-    { id: 'h2', workoutId: 'push', name: 'Chest + Triceps', date: 'Sep 20', completedAt: Date.now() - 3 * 86400000, duration: 44, volume: 3960, personalRecord: false, exercises: [{ exerciseId: 'bench', sets: [{ weight: 60, reps: 8, completed: true }] }] },
-  ],
+  plan: makePlan(4), activeWorkout: null, favoriteExerciseIds: [], bodyWeightEntries: [],
+  history: [],
 };
 
 type Onboarding = Pick<SteadiifitState, 'name' | 'goal' | 'experience' | 'equipment' | 'frequency'>;
@@ -30,7 +28,7 @@ type ContextValue = {
   startSingleExercise: (exerciseId: string) => void;
   setRest: (seconds: number | null, active?: boolean) => void; advanceWorkout: () => void; skipExercise: () => void;
   replaceExercise: (exerciseId: string) => void; addExercise: (exerciseId: string) => void; togglePause: () => void;
-  tickWorkout: () => void; finishWorkout: () => WorkoutHistoryItem | null; discardWorkout: () => void;
+  tickWorkout: () => void; finishWorkout: () => WorkoutHistoryItem | null; discardWorkout: () => void; logBodyWeight: (weight: number) => void;
 };
 const Context = createContext<ContextValue | null>(null);
 
@@ -104,19 +102,27 @@ export function AppProvider({ children }: PropsWithChildren) {
       const workout = workoutById(session.workoutId);
       const completedExercises = session.exercises.filter(ex => ex.sets.some(set => set.completed));
       const volume = session.exercises.reduce((sum, ex) => sum + ex.sets.filter(set => set.completed).reduce((total, set) => total + set.weight * set.reps, 0), 0);
-      const prs = completedExercises.some(ex => {
-        const previousBest = previous.history.flatMap(item => item.exercises).filter(item => item.exerciseId === ex.exerciseId).flatMap(item => item.sets).filter(set => set.completed !== false).reduce((best, set) => Math.max(best, set.weight), 0);
-        return previousBest > 0 && ex.sets.some(set => set.completed && set.weight > previousBest);
+      const personalRecords = completedExercises.flatMap(ex => {
+        const prior = previous.history.flatMap(item => item.exercises).filter(item => item.exerciseId === ex.exerciseId).flatMap(item => item.sets).filter(set => set.completed !== false && set.weight > 0);
+        const previousWeight = prior.reduce((best, set) => Math.max(best, set.weight), 0);
+        const previousRepsAtBest = prior.filter(set => set.weight === previousWeight).reduce((best, set) => Math.max(best, set.reps), 0);
+        const bestSet = ex.sets.filter(set => set.completed && set.weight > 0).reduce<typeof ex.sets[number] | null>((best, set) => !best || set.weight > best.weight || (set.weight === best.weight && set.reps > best.reps) ? set : best, null);
+        return bestSet && (bestSet.weight > previousWeight || (bestSet.weight === previousWeight && bestSet.reps > previousRepsAtBest)) ? [{ exerciseId: ex.exerciseId, weight: bestSet.weight, reps: bestSet.reps }] : [];
       });
       const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      created = { id: session.id, workoutId: session.workoutId, name: session.workoutName || workout.name, date, completedAt: Date.now(), duration: Math.max(1, Math.round(session.elapsedSeconds / 60)), volume: Math.round(volume), personalRecord: prs, exercises: session.exercises.map(ex => ({ exerciseId: ex.exerciseId, skipped: ex.skipped, sets: ex.sets.filter(set => set.completed).map(({ weight, reps, completed }) => ({ weight, reps, completed })) })) };
+      created = { id: session.id, workoutId: session.workoutId, name: session.workoutName || workout.name, date, completedAt: Date.now(), duration: Math.max(1, Math.round(session.elapsedSeconds / 60)), volume: Math.round(volume), units: previous.units, personalRecord: personalRecords.length > 0, personalRecords, exercises: session.exercises.map(ex => ({ exerciseId: ex.exerciseId, skipped: ex.skipped, sets: ex.sets.filter(set => set.completed).map(({ weight, reps, completed }) => ({ weight, reps, completed })) })) };
       const today = (new Date().getDay() + 6) % 7; const plan = previous.plan.map(day => day.day === today && day.workoutId === session.workoutId ? { ...day, status: 'done' as const } : day);
       return { ...previous, plan, activeWorkout: null, history: [created!, ...previous.history] };
     });
     return created;
   };
   const discardWorkout = () => setState(previous => ({ ...previous, activeWorkout: null }));
-  const value = useMemo(() => ({ state, finishOnboarding, setUnits, toggleFavorite, startWorkout, startSingleExercise, updateSet, completeSet, setRest, advanceWorkout, skipExercise, replaceExercise, addExercise, togglePause, tickWorkout, finishWorkout, discardWorkout }), [state]);
+  const logBodyWeight = (weight: number) => {
+    if (!Number.isFinite(weight) || weight <= 0) return;
+    const recordedAt = Date.now();
+    setState(previous => ({ ...previous, bodyWeightEntries: [{ id: `weight-${recordedAt}`, recordedAt, weight, units: previous.units }, ...previous.bodyWeightEntries] }));
+  };
+  const value = useMemo(() => ({ state, finishOnboarding, setUnits, toggleFavorite, startWorkout, startSingleExercise, updateSet, completeSet, setRest, advanceWorkout, skipExercise, replaceExercise, addExercise, togglePause, tickWorkout, finishWorkout, discardWorkout, logBodyWeight }), [state]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
