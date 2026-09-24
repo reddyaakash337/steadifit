@@ -13,6 +13,7 @@ import { InMemorySteadiifitRepository } from '@/data/repositories/inMemory';
 import type { SteadiifitRepository } from '@/data/repositories/types';
 import { profileRepository } from '@/data/repositories/profile';
 import { settingsRepository } from '@/data/repositories/settings';
+import { planRepository } from '@/data/repositories/plan';
 import { useAuth } from '@/state/AuthContext';
 
 export type { BodyWeightEntry, CoachMessage, FoodMeal, Goal, WorkoutHistoryItem, WorkoutSettings, WorkoutSet } from '@/types/domain';
@@ -77,6 +78,9 @@ export function AppProvider({ children }: PropsWithChildren) {
   const profileInitializationRef = useRef<Promise<void> | null>(null);
   const initialSettingsRef = useRef(repository.getSettings());
   const settingsInitializationRef = useRef<Promise<void> | null>(null);
+  const initialPlanRef = useRef(repository.getActivePlan());
+  const planInitializationRef = useRef<Promise<void> | null>(null);
+  const planWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     if (authStatus !== 'authenticated' || !user) return;
@@ -88,6 +92,24 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (Object.keys(initialProfile).every(key => current[key as keyof Profile] === initialProfile[key as keyof Profile])) {
         repository.updateProfile(result.data);
       }
+    })();
+  }, [authStatus, repository, user]);
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !user) return;
+    const initialPlan = initialPlanRef.current;
+    planInitializationRef.current = (async () => {
+      const result = await planRepository.loadCurrentPlan();
+      if (result.error) {
+        console.error('Could not load the workout plan from Supabase; keeping the local plan for this session.', result.error);
+        return;
+      }
+      if (result.data) {
+        if (JSON.stringify(repository.getActivePlan()) === JSON.stringify(initialPlan)) repository.savePlan(result.data);
+        return;
+      }
+      const saveResult = await planRepository.saveCurrentPlan(repository.getActivePlan());
+      if (saveResult.error) console.error('Could not create the workout plan in Supabase; keeping the local plan for this session.', saveResult.error);
     })();
   }, [authStatus, repository, user]);
 
@@ -122,10 +144,24 @@ export function AppProvider({ children }: PropsWithChildren) {
     })();
   };
 
+  const persistPlan = (plan: WorkoutPlan) => {
+    const save = async () => {
+      await planInitializationRef.current;
+      const result = await planRepository.saveCurrentPlan(plan);
+      if (result.error) console.error('Could not save the workout plan to Supabase; keeping the local plan for this session.', result.error);
+    };
+    planWriteQueueRef.current = planWriteQueueRef.current.then(save, save);
+  };
+
+  const updatePlan = (plan: WorkoutPlan) => {
+    repository.savePlan(plan);
+    persistPlan(plan);
+  };
+
   const finishOnboarding = (value: Onboarding) => {
     const profile = { ...repository.getProfile(), ...value };
     saveProfile(profile);
-    repository.savePlan(createPlan(createPlanPreferences(profile)));
+    updatePlan(createPlan(createPlanPreferences(profile)));
   };
   const setUnits = (units: WeightUnit) => saveSettings({ ...repository.getSettings(), units });
   const toggleFavorite = (exerciseId: string) => repository.toggleFavorite(exerciseId);
@@ -215,6 +251,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     const today = (new Date().getDay() + 6) % 7;
     const days = current.plan.map(day => day.weekday === today && day.workoutId === session.workoutId ? { ...day, status: 'done' as const } : day);
     repository.completeWorkoutSession(item, { ...repository.getActivePlan(), days });
+    persistPlan(repository.getActivePlan());
     return item;
   };
   const discardWorkout = () => repository.discardWorkoutSession();
@@ -228,7 +265,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   const regeneratePlan = (preferences: PlanPreferences, name?: string) => {
     const current = repository.getProfile();
     saveProfile({ ...current, name: name?.trim().slice(0, 40) || current.name, goal: preferences.goal, experience: preferences.experience, frequency: preferences.frequency, equipment: preferences.equipment, duration: preferences.duration, trainingFocus: preferences.focus });
-    repository.savePlan(createPlan(preferences));
+    updatePlan(createPlan(preferences));
   };
   const startPlanWorkoutAction = (dayIndex: number) => startPlanWorkout(dayIndex);
   const replacePlanExercise = (dayIndex: number, exerciseIndex: number, exerciseId: string) => {
@@ -236,7 +273,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     const selected = planned[exerciseIndex]; if (!day?.workoutId || !selected) return;
     const next = planned.map(item => item.id === selected.id ? { ...item, exerciseId } : item);
     const focus = [...new Set(next.flatMap(item => exerciseById(item.exerciseId).primaryMuscles))].join(', ');
-    repository.replacePlanExercise(day.id, selected.id, exerciseId, { focus, duration: estimateWorkoutDuration(next) });
+    if (repository.replacePlanExercise(day.id, selected.id, exerciseId, { focus, duration: estimateWorkoutDuration(next) })) persistPlan(repository.getActivePlan());
   };
   const addPlanExercise = (dayIndex: number, exerciseId: string) => {
     const day = repository.getActivePlan().days[dayIndex]; if (!day?.workoutId) return;
@@ -244,14 +281,16 @@ export function AppProvider({ children }: PropsWithChildren) {
     const exercise = exerciseById(exerciseId);
     const next = [...current, { exerciseId, sets: exercise.sets, repRange: exercise.repRange, restSeconds: exercise.restSeconds }];
     const focus = [...new Set(next.flatMap(item => exerciseById(item.exerciseId).primaryMuscles))].join(', ');
-    repository.addPlanExercise(day.id, { exerciseId, sets: exercise.sets, repRange: exercise.repRange, restSeconds: exercise.restSeconds }, { focus, duration: estimateWorkoutDuration(next) });
+    if (repository.addPlanExercise(day.id, { exerciseId, sets: exercise.sets, repRange: exercise.repRange, restSeconds: exercise.restSeconds }, { focus, duration: estimateWorkoutDuration(next) })) persistPlan(repository.getActivePlan());
   };
   const removePlanExercise = (dayIndex: number, exerciseIndex: number) => {
     const day = repository.getActivePlan().days[dayIndex]; const current = day ? plannedExercises(day) : [];
     if (!day?.workoutId || current.length <= 1 || !current[exerciseIndex]) return false;
     const next = current.filter((_, index) => index !== exerciseIndex);
     const focus = [...new Set(next.flatMap(item => exerciseById(item.exerciseId).primaryMuscles))].join(', ');
-    return repository.removePlanExercise(day.id, current[exerciseIndex].id, { focus, duration: estimateWorkoutDuration(next) });
+    const removed = repository.removePlanExercise(day.id, current[exerciseIndex].id, { focus, duration: estimateWorkoutDuration(next) });
+    if (removed) persistPlan(repository.getActivePlan());
+    return removed;
   };
 
   const addFood = (entry: Omit<FoodEntry, 'id' | 'date'>) => {
@@ -265,11 +304,12 @@ export function AppProvider({ children }: PropsWithChildren) {
   const updateWorkoutSettings = (settings: Partial<WorkoutSettings>) => saveSettings({ ...repository.getSettings(), workoutSettings: { ...repository.getSettings().workoutSettings, ...settings } });
   const clearWorkoutHistory = () => repository.clearWorkoutHistory();
   const clearNutritionData = () => repository.clearNutritionEntries();
-  const resetPlan = () => repository.resetPlan(createPlan(createPlanPreferences(repository.getProfile())));
+  const resetPlan = () => updatePlan(createPlan(createPlanPreferences(repository.getProfile())));
   const resetAppData = () => {
     const fresh = createInitialState();
     repository.resetAllData({ profile: createProfile(fresh), settings: { units: fresh.units, workoutSettings: fresh.workoutSettings }, plan: createPlan(createPlanPreferences(createProfile(fresh)), fresh.plan), coachConversationId: fresh.coachConversationId });
     saveSettings({ units: fresh.units, workoutSettings: fresh.workoutSettings });
+    persistPlan(repository.getActivePlan());
   };
 
   const value = useMemo(() => ({ state, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
