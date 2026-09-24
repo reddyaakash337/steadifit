@@ -12,6 +12,7 @@ import { createId } from '@/utils/ids';
 import { InMemorySteadiifitRepository } from '@/data/repositories/inMemory';
 import type { SteadiifitRepository } from '@/data/repositories/types';
 import { profileRepository } from '@/data/repositories/profile';
+import { settingsRepository } from '@/data/repositories/settings';
 import { useAuth } from '@/state/AuthContext';
 
 export type { BodyWeightEntry, CoachMessage, FoodMeal, Goal, WorkoutHistoryItem, WorkoutSettings, WorkoutSet } from '@/types/domain';
@@ -26,7 +27,7 @@ const createInitialState = (): SteadiifitState => ({
   name: 'Alex', goal: defaultPreferences.goal, experience: defaultPreferences.experience, equipment: defaultPreferences.equipment, frequency: defaultPreferences.frequency,
   units: 'kg', duration: defaultPreferences.duration, trainingFocus: defaultPreferences.focus,
   planId: createId(), planStartedAt: Date.now(), coachConversationId: createId(), plan: generateWorkoutPlan(defaultPreferences),
-  activeWorkout: null, favoriteExerciseIds: [], bodyWeightEntries: [], workoutSettings: { defaultRestSeconds: 90, autoStartRest: true },
+  activeWorkout: null, favoriteExerciseIds: [], bodyWeightEntries: [], workoutSettings: { defaultRestSeconds: 90, autoStartRest: true, soundEnabled: true, vibrationEnabled: true },
   history: [], foodEntries: [], coachMessages: [],
 });
 const createProfile = (value: Pick<SteadiifitState, 'name' | 'goal' | 'experience' | 'equipment' | 'frequency' | 'duration' | 'trainingFocus'>): Profile => ({
@@ -74,6 +75,8 @@ export function AppProvider({ children }: PropsWithChildren) {
   const state = useSyncExternalStore(repository.subscribe, repository.getSnapshot, repository.getSnapshot);
   const initialProfileRef = useRef(repository.getProfile());
   const profileInitializationRef = useRef<Promise<void> | null>(null);
+  const initialSettingsRef = useRef(repository.getSettings());
+  const settingsInitializationRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     if (authStatus !== 'authenticated' || !user) return;
@@ -88,6 +91,19 @@ export function AppProvider({ children }: PropsWithChildren) {
     })();
   }, [authStatus, repository, user]);
 
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !user) return;
+    const initialSettings = initialSettingsRef.current;
+    settingsInitializationRef.current = (async () => {
+      const result = await settingsRepository.getOrCreateCurrentSettings(initialSettings);
+      if (result.error || !result.data) return;
+      const current = repository.getSettings();
+      const unchanged = current.units === initialSettings.units &&
+        Object.keys(initialSettings.workoutSettings).every(key => current.workoutSettings[key as keyof WorkoutSettings] === initialSettings.workoutSettings[key as keyof WorkoutSettings]);
+      if (unchanged) repository.updateSettings(result.data);
+    })();
+  }, [authStatus, repository, user]);
+
   const saveProfile = (profile: Profile) => {
     repository.updateProfile(profile);
     void (async () => {
@@ -97,12 +113,21 @@ export function AppProvider({ children }: PropsWithChildren) {
     })();
   };
 
+  const saveSettings = (settings: UserSettings) => {
+    repository.updateSettings(settings);
+    void (async () => {
+      await settingsInitializationRef.current;
+      const result = await settingsRepository.updateCurrentSettings(settings);
+      if (result.error) console.error('Could not save settings to Supabase; keeping the local settings for this session.', result.error);
+    })();
+  };
+
   const finishOnboarding = (value: Onboarding) => {
     const profile = { ...repository.getProfile(), ...value };
     saveProfile(profile);
     repository.savePlan(createPlan(createPlanPreferences(profile)));
   };
-  const setUnits = (units: WeightUnit) => repository.updateSettings({ ...repository.getSettings(), units });
+  const setUnits = (units: WeightUnit) => saveSettings({ ...repository.getSettings(), units });
   const toggleFavorite = (exerciseId: string) => repository.toggleFavorite(exerciseId);
 
   const startWorkout = (workoutId: string) => {
@@ -237,13 +262,14 @@ export function AppProvider({ children }: PropsWithChildren) {
   const appendCoachMessage = (message: Omit<CoachMessage, 'id' | 'timestamp'>) => repository.appendCoachMessage({ ...message, id: createId(), timestamp: Date.now() });
   const clearCoachMessages = () => repository.clearCoachConversation(createId());
   const updateName = (name: string) => saveProfile({ ...repository.getProfile(), name: name.trim().slice(0, 40) || repository.getProfile().name });
-  const updateWorkoutSettings = (settings: Partial<WorkoutSettings>) => repository.updateSettings({ ...repository.getSettings(), workoutSettings: { ...repository.getSettings().workoutSettings, ...settings } });
+  const updateWorkoutSettings = (settings: Partial<WorkoutSettings>) => saveSettings({ ...repository.getSettings(), workoutSettings: { ...repository.getSettings().workoutSettings, ...settings } });
   const clearWorkoutHistory = () => repository.clearWorkoutHistory();
   const clearNutritionData = () => repository.clearNutritionEntries();
   const resetPlan = () => repository.resetPlan(createPlan(createPlanPreferences(repository.getProfile())));
   const resetAppData = () => {
     const fresh = createInitialState();
     repository.resetAllData({ profile: createProfile(fresh), settings: { units: fresh.units, workoutSettings: fresh.workoutSettings }, plan: createPlan(createPlanPreferences(createProfile(fresh)), fresh.plan), coachConversationId: fresh.coachConversationId });
+    saveSettings({ units: fresh.units, workoutSettings: fresh.workoutSettings });
   };
 
   const value = useMemo(() => ({ state, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,

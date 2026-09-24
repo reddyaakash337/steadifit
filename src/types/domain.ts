@@ -3,7 +3,7 @@ import type { WeightUnit } from '@/features/units';
 export type Goal = 'Build muscle' | 'Get stronger' | 'Lose fat' | 'Stay consistent';
 export type TrainingFocus = 'Balanced' | 'Full Body' | 'Upper Body' | 'Lower Body' | 'Push' | 'Pull' | 'Legs' | 'Strength' | 'Hypertrophy';
 export type PlanPreferences = { goal: Goal; experience: string; frequency: number; equipment: string; duration: number; focus: TrainingFocus };
-export type WorkoutSettings = { defaultRestSeconds: number; autoStartRest: boolean };
+export type WorkoutSettings = { defaultRestSeconds: number; autoStartRest: boolean; soundEnabled: boolean; vibrationEnabled: boolean };
 
 export type Profile = {
   name: string;
