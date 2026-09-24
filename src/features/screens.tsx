@@ -4,6 +4,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import Constants from 'expo-constants';
 import { ExerciseCategory, ExerciseDifficulty, exerciseById, exercises, PlanDay, workoutById, workouts } from '@/data/catalog';
 import { useSteadiifit, Goal, FoodMeal } from '@/state/AppContext';
+import { useAuth } from '@/state/AuthContext';
 import { SteadiifitColors as C } from '@/constants/theme';
 import { Action, Card, Copy, Empty, Eyebrow, Heading, Option, Pill, Screen, SectionTitle, TopBar, uiStyles } from '@/components/steadiifit-ui';
 import { ExerciseCard } from '@/components/exercises/ExerciseCard';
@@ -447,6 +448,21 @@ export function CoachScreen() {
 
 export function ProfileScreen() {
   const { state } = useSteadiifit();
+  const { signOut } = useAuth();
+  const [signingOut, setSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState('');
+  const logOut = async () => {
+    setSigningOut(true);
+    setSignOutError('');
+    try {
+      const result = await signOut();
+      if (result.error) setSignOutError(result.error.message);
+    } catch {
+      setSignOutError('Could not log out. Please try again.');
+    } finally {
+      setSigningOut(false);
+    }
+  };
   const latest = sortedBodyWeight(state.bodyWeightEntries)[0];
   const bodyWeight = latest ? `${formatWeight(latest.weight, latest.units, state.units)} ${state.units}` : 'Not logged';
   const summary = `${state.goal} · ${state.frequency} workouts/week`;
@@ -458,6 +474,8 @@ export function ProfileScreen() {
     <SectionTitle title="Nutrition" /><Card onPress={() => router.push('/nutrition')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Nutrition tracking</Text><Copy>Today’s meals and macro overview</Copy></View><Text style={s.chevron}>›</Text></Card>
     <SectionTitle title="Preferences" /><Card onPress={() => router.push('/profile/edit')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Personalize your plan</Text><Copy>{state.frequency} days · {state.duration} min · {state.equipment}</Copy></View><Text style={s.chevron}>›</Text></Card>
     <SectionTitle title="App" /><Card onPress={() => router.push('/settings')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Settings</Text><Copy>Units, workout behavior, and local data</Copy></View><Text style={s.chevron}>›</Text></Card><Action title="About Steadiifit" secondary onPress={() => router.push('/about')} />
+    <SectionTitle title="Account" /><Action title={signingOut ? 'Logging out…' : 'Log out'} secondary disabled={signingOut} onPress={() => void logOut()} />
+    {signOutError ? <Copy>{signOutError}</Copy> : null}
   </Screen>;
 }
 

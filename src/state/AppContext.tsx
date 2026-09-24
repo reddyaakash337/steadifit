@@ -1,4 +1,4 @@
-import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { exerciseById, PlanDay, PlannedExercise, workoutById } from '@/data/catalog';
 import { estimateWorkoutDuration, generateWorkoutPlan, PlanPreferences, plannedExercises } from '@/features/plan';
 import { convertWeight } from '@/features/units';
@@ -14,6 +14,7 @@ import type { SteadiifitRepository } from '@/data/repositories/types';
 import { profileRepository } from '@/data/repositories/profile';
 import { settingsRepository } from '@/data/repositories/settings';
 import { planRepository } from '@/data/repositories/plan';
+import { workoutRepository } from '@/data/repositories/workout';
 import { useAuth } from '@/state/AuthContext';
 
 export type { BodyWeightEntry, CoachMessage, FoodMeal, Goal, WorkoutHistoryItem, WorkoutSettings, WorkoutSet } from '@/types/domain';
@@ -42,7 +43,7 @@ const createPlanPreferences = (profile: Profile): PlanPreferences => ({
 
 type Onboarding = Pick<SteadiifitState, 'name' | 'goal' | 'experience' | 'equipment' | 'frequency'>;
 type ContextValue = {
-  state: SteadiifitState; finishOnboarding: (value: Onboarding) => void; saveProfile: (profile: Profile) => void; setUnits: (units: 'kg' | 'lb') => void; toggleFavorite: (exerciseId: string) => void;
+  state: SteadiifitState; profileLoaded: boolean; onboardingCompleted: boolean; finishOnboarding: (value: Onboarding) => void; saveProfile: (profile: Profile) => void; setUnits: (units: 'kg' | 'lb') => void; toggleFavorite: (exerciseId: string) => void;
   startWorkout: (workoutId: string) => void; updateSet: (weight: number, reps: number) => void; completeSet: () => void;
   startSingleExercise: (exerciseId: string) => void;
   setRest: (seconds: number | null, active?: boolean) => void; advanceWorkout: () => void; skipExercise: () => void;
@@ -74,6 +75,8 @@ export function AppProvider({ children }: PropsWithChildren) {
   if (!repositoryRef.current) repositoryRef.current = new InMemorySteadiifitRepository(createInitialState());
   const repository = repositoryRef.current;
   const state = useSyncExternalStore(repository.subscribe, repository.getSnapshot, repository.getSnapshot);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const initialProfileRef = useRef(repository.getProfile());
   const profileInitializationRef = useRef<Promise<void> | null>(null);
   const initialSettingsRef = useRef(repository.getSettings());
@@ -81,17 +84,52 @@ export function AppProvider({ children }: PropsWithChildren) {
   const initialPlanRef = useRef(repository.getActivePlan());
   const planInitializationRef = useRef<Promise<void> | null>(null);
   const planWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const workoutInitializationRef = useRef<Promise<void> | null>(null);
+  const workoutWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !user) {
+      setProfileLoaded(false);
+      setOnboardingCompleted(false);
+      return;
+    }
+    let active = true;
+    setProfileLoaded(false);
+    const initialProfile = initialProfileRef.current;
+    profileInitializationRef.current = (async () => {
+      try {
+        const result = await profileRepository.getOrCreateCurrentProfile(initialProfile);
+        if (result.error || !result.data) {
+          if (result.error) console.error('Could not load the profile onboarding status; keeping the local profile for this session.', result.error);
+          return;
+        }
+        const current = repository.getProfile();
+        if (Object.keys(initialProfile).every(key => current[key as keyof Profile] === initialProfile[key as keyof Profile])) {
+          repository.updateProfile(result.data.profile);
+        }
+        if (active) setOnboardingCompleted(result.data.onboardingCompleted);
+      } finally {
+        if (active) setProfileLoaded(true);
+      }
+    })();
+    return () => { active = false; };
+  }, [authStatus, repository, user]);
 
   useEffect(() => {
     if (authStatus !== 'authenticated' || !user) return;
-    const initialProfile = initialProfileRef.current;
-    profileInitializationRef.current = (async () => {
-      const result = await profileRepository.getOrCreateCurrentProfile(initialProfile);
-      if (result.error || !result.data) return;
-      const current = repository.getProfile();
-      if (Object.keys(initialProfile).every(key => current[key as keyof Profile] === initialProfile[key as keyof Profile])) {
-        repository.updateProfile(result.data);
+    workoutInitializationRef.current = (async () => {
+      const result = await workoutRepository.loadCurrentWorkouts();
+      if (result.error || !result.data) {
+        if (result.error) console.error('Could not load workouts from Supabase; keeping local workout data for this session.', result.error);
+        return;
       }
+      const localActiveSession = repository.getSnapshot().activeWorkout;
+      const existingIds = new Set(repository.getWorkoutHistory().map(item => item.id));
+      for (const item of result.data.history.slice().reverse()) {
+        if (!existingIds.has(item.id)) repository.completeWorkoutSession(item);
+      }
+      if (localActiveSession) repository.createWorkoutSession(localActiveSession);
+      else if (result.data.activeSession) repository.createWorkoutSession(result.data.activeSession);
     })();
   }, [authStatus, repository, user]);
 
@@ -158,8 +196,38 @@ export function AppProvider({ children }: PropsWithChildren) {
     persistPlan(plan);
   };
 
+  const queueWorkoutWrite = (write: () => Promise<{ error: unknown | null }>) => {
+    const save = async () => {
+      await workoutInitializationRef.current;
+      const result = await write();
+      if (result.error) console.error('Could not save workout data to Supabase; keeping local workout data for this session.', result.error);
+    };
+    workoutWriteQueueRef.current = workoutWriteQueueRef.current.then(save, save);
+  };
+
+  const persistActiveWorkout = (session: WorkoutSession) => queueWorkoutWrite(async () => {
+    const result = await workoutRepository.saveActiveSession(session);
+    return { error: result.error };
+  });
+
+  const persistCompletedWorkout = (session: WorkoutSession, history: WorkoutHistoryItem) => queueWorkoutWrite(async () => {
+    const result = await workoutRepository.completeSession(session, history);
+    return { error: result.error };
+  });
+
+  const deletePersistedWorkout = (id: string) => queueWorkoutWrite(async () => {
+    const result = await workoutRepository.discardSession(id);
+    return { error: result.error };
+  });
+
+  const clearPersistedWorkoutHistory = () => queueWorkoutWrite(async () => {
+    const result = await workoutRepository.clearCompletedSessions();
+    return { error: result.error };
+  });
+
   const finishOnboarding = (value: Onboarding) => {
     const profile = { ...repository.getProfile(), ...value };
+    setOnboardingCompleted(true);
     saveProfile(profile);
     updatePlan(createPlan(createPlanPreferences(profile)));
   };
@@ -173,6 +241,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     repository.createWorkoutSession({ id: createId(), workoutId, workoutName: workout.name, startedAt: Date.now(), elapsedSeconds: 0, paused: false, units: current.units,
       exercises: workout.exerciseIds.map((id, position) => makeSessionExercise(id, repository.getWorkoutHistory(), current.units, position)),
       exerciseIndex: 0, setIndex: 0, restSeconds: null, restActive: false });
+    persistActiveWorkout(repository.getSnapshot().activeWorkout!);
   };
   const startPlanWorkout = (dayIndex: number) => {
     const current = repository.getSnapshot(); const selectedDay = current.plan[dayIndex];
@@ -184,6 +253,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     repository.createWorkoutSession({ id: createId(), workoutId: selectedDay.workoutId, workoutName: selectedDay.title ?? template.name, startedAt: Date.now(), elapsedSeconds: 0, paused: false, units: current.units,
       exercises: planned.map((item, position) => makeSessionExercise(item.exerciseId, current.history, current.units, position, item)),
       exerciseIndex: 0, setIndex: 0, restSeconds: null, restActive: false });
+    persistActiveWorkout(repository.getSnapshot().activeWorkout!);
     return workoutId;
   };
   const startSingleExercise = (exerciseId: string) => {
@@ -191,10 +261,15 @@ export function AppProvider({ children }: PropsWithChildren) {
     const exercise = repository.getExercises().find(item => item.id === exerciseId) ?? exerciseById(exerciseId);
     repository.createWorkoutSession({ id: createId(), workoutId: `exercise-${exerciseId}`, workoutName: exercise.name, startedAt: Date.now(), elapsedSeconds: 0, paused: false, units: current.units,
       exercises: [makeSessionExercise(exerciseId, current.history, current.units, 0)], exerciseIndex: 0, setIndex: 0, restSeconds: null, restActive: false });
+    persistActiveWorkout(repository.getSnapshot().activeWorkout!);
   };
-  const updateWorkout = (transform: (session: WorkoutSession, current: SteadiifitSnapshot) => WorkoutSession) => {
+  const updateWorkout = (transform: (session: WorkoutSession, current: SteadiifitSnapshot) => WorkoutSession, shouldPersist = true) => {
     const current = repository.getSnapshot(); const session = current.activeWorkout;
-    if (session) repository.updateWorkoutSession(transform(session, current));
+    if (session) {
+      const updated = transform(session, current);
+      repository.updateWorkoutSession(updated);
+      if (shouldPersist && updated !== session) persistActiveWorkout(updated);
+    }
   };
   const updateSet = (weight: number, reps: number) => updateWorkout((session, current) => {
     const exercisesCopy = [...session.exercises]; const ex = { ...exercisesCopy[session.exerciseIndex], sets: [...exercisesCopy[session.exerciseIndex].sets] };
@@ -226,9 +301,15 @@ export function AppProvider({ children }: PropsWithChildren) {
     return { ...session, exercises: [...session.exercises, makeSessionExercise(exerciseId, current.history, session.units, session.exercises.length)] };
   });
   const togglePause = () => updateWorkout(session => ({ ...session, paused: !session.paused }));
-  const tickWorkout = () => updateWorkout(session => session.paused ? session : ({ ...session, elapsedSeconds: session.elapsedSeconds + 1,
-    restSeconds: session.restActive ? Math.max(0, (session.restSeconds ?? 0) - 1) : session.restSeconds,
-    restActive: session.restActive && (session.restSeconds ?? 0) > 1 }));
+  const tickWorkout = () => {
+    const session = repository.getSnapshot().activeWorkout;
+    if (!session || session.paused) return;
+    const nextElapsed = session.elapsedSeconds + 1;
+    const restFinishing = session.restActive && (session.restSeconds ?? 0) <= 1;
+    updateWorkout(current => ({ ...current, elapsedSeconds: nextElapsed,
+      restSeconds: current.restActive ? Math.max(0, (current.restSeconds ?? 0) - 1) : current.restSeconds,
+      restActive: current.restActive && (current.restSeconds ?? 0) > 1 }), nextElapsed % 5 === 0 || restFinishing);
+  };
 
   const finishWorkout = () => {
     const current = repository.getSnapshot(); const session = current.activeWorkout;
@@ -252,9 +333,15 @@ export function AppProvider({ children }: PropsWithChildren) {
     const days = current.plan.map(day => day.weekday === today && day.workoutId === session.workoutId ? { ...day, status: 'done' as const } : day);
     repository.completeWorkoutSession(item, { ...repository.getActivePlan(), days });
     persistPlan(repository.getActivePlan());
+    persistCompletedWorkout(session, item);
     return item;
   };
-  const discardWorkout = () => repository.discardWorkoutSession();
+  const discardWorkout = () => {
+    const active = repository.getSnapshot().activeWorkout;
+    if (!active) return;
+    repository.discardWorkoutSession();
+    deletePersistedWorkout(active.id);
+  };
   const logBodyWeight = (weight: number) => {
     if (!Number.isFinite(weight) || weight <= 0) return;
     const current = repository.getSnapshot();
@@ -302,20 +389,26 @@ export function AppProvider({ children }: PropsWithChildren) {
   const clearCoachMessages = () => repository.clearCoachConversation(createId());
   const updateName = (name: string) => saveProfile({ ...repository.getProfile(), name: name.trim().slice(0, 40) || repository.getProfile().name });
   const updateWorkoutSettings = (settings: Partial<WorkoutSettings>) => saveSettings({ ...repository.getSettings(), workoutSettings: { ...repository.getSettings().workoutSettings, ...settings } });
-  const clearWorkoutHistory = () => repository.clearWorkoutHistory();
+  const clearWorkoutHistory = () => {
+    repository.clearWorkoutHistory();
+    clearPersistedWorkoutHistory();
+  };
   const clearNutritionData = () => repository.clearNutritionEntries();
   const resetPlan = () => updatePlan(createPlan(createPlanPreferences(repository.getProfile())));
   const resetAppData = () => {
     const fresh = createInitialState();
+    const activeWorkoutId = repository.getSnapshot().activeWorkout?.id;
     repository.resetAllData({ profile: createProfile(fresh), settings: { units: fresh.units, workoutSettings: fresh.workoutSettings }, plan: createPlan(createPlanPreferences(createProfile(fresh)), fresh.plan), coachConversationId: fresh.coachConversationId });
     saveSettings({ units: fresh.units, workoutSettings: fresh.workoutSettings });
     persistPlan(repository.getActivePlan());
+    if (activeWorkoutId) deletePersistedWorkout(activeWorkoutId);
+    clearPersistedWorkoutHistory();
   };
 
-  const value = useMemo(() => ({ state, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
+  const value = useMemo(() => ({ state, profileLoaded, onboardingCompleted, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
     updateSet, completeSet, setRest, advanceWorkout, skipExercise, replaceExercise, addExercise, replacePlanExercise, addPlanExercise, removePlanExercise,
     togglePause, tickWorkout, finishWorkout, discardWorkout, logBodyWeight, regeneratePlan, addFood, removeFood, appendCoachMessage, clearCoachMessages,
-    updateName, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData }), [state]);
+    updateName, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData }), [state, profileLoaded, onboardingCompleted]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 
