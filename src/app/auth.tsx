@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Action, Card, Copy, Heading, Screen, TopBar } from '@/components/steadiifit-ui';
 import { SteadiifitColors as C } from '@/constants/theme';
 import { useAuth } from '@/state/AuthContext';
 
 export default function AuthScreen() {
+  const router = useRouter();
   const { status, user, signIn, signUp, signOut } = useAuth();
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [email, setEmail] = useState('');
@@ -12,6 +14,14 @@ export default function AuthScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [enterApplication, setEnterApplication] = useState(false);
+
+  useEffect(() => {
+    if (enterApplication && status === 'authenticated') {
+      setEnterApplication(false);
+      router.replace('/');
+    }
+  }, [enterApplication, router, status]);
 
   const submit = async () => {
     setBusy(true);
@@ -20,13 +30,14 @@ export default function AuthScreen() {
     try {
       if (creatingAccount) {
         const result = await signUp(email, password);
-        if (result.error) setError(result.error.message);
+        if (result.error) setError(result.error.debugMessage ?? result.error.message);
         else if (result.data?.requiresEmailConfirmation) setMessage('Check your email to confirm your account, then sign in.');
-        else setMessage('Your account is ready.');
+        else if (result.data?.session) setEnterApplication(true);
+        else setMessage('Your account was created. Sign in to continue.');
       } else {
         const result = await signIn(email, password);
-        if (result.error) setError(result.error.message);
-        else setMessage('You are signed in.');
+        if (result.error) setError(result.error.debugMessage ?? result.error.message);
+        else setEnterApplication(true);
       }
     } finally {
       setBusy(false);
