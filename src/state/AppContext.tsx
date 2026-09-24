@@ -1,4 +1,4 @@
-import React, { createContext, PropsWithChildren, useContext, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { exerciseById, PlanDay, PlannedExercise, workoutById } from '@/data/catalog';
 import { estimateWorkoutDuration, generateWorkoutPlan, PlanPreferences, plannedExercises } from '@/features/plan';
 import { convertWeight } from '@/features/units';
@@ -11,6 +11,8 @@ import type {
 import { createId } from '@/utils/ids';
 import { InMemorySteadiifitRepository } from '@/data/repositories/inMemory';
 import type { SteadiifitRepository } from '@/data/repositories/types';
+import { profileRepository } from '@/data/repositories/profile';
+import { useAuth } from '@/state/AuthContext';
 
 export type { BodyWeightEntry, CoachMessage, FoodMeal, Goal, WorkoutHistoryItem, WorkoutSettings, WorkoutSet } from '@/types/domain';
 export type FoodEntry = NutritionEntry;
@@ -38,13 +40,13 @@ const createPlanPreferences = (profile: Profile): PlanPreferences => ({
 
 type Onboarding = Pick<SteadiifitState, 'name' | 'goal' | 'experience' | 'equipment' | 'frequency'>;
 type ContextValue = {
-  state: SteadiifitState; finishOnboarding: (value: Onboarding) => void; setUnits: (units: 'kg' | 'lb') => void; toggleFavorite: (exerciseId: string) => void;
+  state: SteadiifitState; finishOnboarding: (value: Onboarding) => void; saveProfile: (profile: Profile) => void; setUnits: (units: 'kg' | 'lb') => void; toggleFavorite: (exerciseId: string) => void;
   startWorkout: (workoutId: string) => void; updateSet: (weight: number, reps: number) => void; completeSet: () => void;
   startSingleExercise: (exerciseId: string) => void;
   setRest: (seconds: number | null, active?: boolean) => void; advanceWorkout: () => void; skipExercise: () => void;
   replaceExercise: (exerciseId: string) => void; addExercise: (exerciseId: string) => void; togglePause: () => void;
   tickWorkout: () => void; finishWorkout: () => WorkoutHistoryItem | null; discardWorkout: () => void; logBodyWeight: (weight: number) => void;
-  regeneratePlan: (preferences: PlanPreferences) => void; startPlanWorkout: (dayIndex: number) => string | null;
+  regeneratePlan: (preferences: PlanPreferences, name?: string) => void; startPlanWorkout: (dayIndex: number) => string | null;
   replacePlanExercise: (dayIndex: number, exerciseIndex: number, exerciseId: string) => void; addPlanExercise: (dayIndex: number, exerciseId: string) => void; removePlanExercise: (dayIndex: number, exerciseIndex: number) => boolean;
   addFood: (entry: Omit<FoodEntry, 'id' | 'date'>) => void; removeFood: (id: string) => void; appendCoachMessage: (message: Omit<CoachMessage, 'id' | 'timestamp'>) => void; clearCoachMessages: () => void;
   updateName: (name: string) => void; updateWorkoutSettings: (settings: Partial<WorkoutSettings>) => void;
@@ -65,14 +67,39 @@ const makeSessionExercise = (exerciseId: string, history: WorkoutHistoryItem[], 
 };
 
 export function AppProvider({ children }: PropsWithChildren) {
+  const { status: authStatus, user } = useAuth();
   const repositoryRef = useRef<SteadiifitRepository | null>(null);
   if (!repositoryRef.current) repositoryRef.current = new InMemorySteadiifitRepository(createInitialState());
   const repository = repositoryRef.current;
   const state = useSyncExternalStore(repository.subscribe, repository.getSnapshot, repository.getSnapshot);
+  const initialProfileRef = useRef(repository.getProfile());
+  const profileInitializationRef = useRef<Promise<void> | null>(null);
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !user) return;
+    const initialProfile = initialProfileRef.current;
+    profileInitializationRef.current = (async () => {
+      const result = await profileRepository.getOrCreateCurrentProfile(initialProfile);
+      if (result.error || !result.data) return;
+      const current = repository.getProfile();
+      if (Object.keys(initialProfile).every(key => current[key as keyof Profile] === initialProfile[key as keyof Profile])) {
+        repository.updateProfile(result.data);
+      }
+    })();
+  }, [authStatus, repository, user]);
+
+  const saveProfile = (profile: Profile) => {
+    repository.updateProfile(profile);
+    void (async () => {
+      await profileInitializationRef.current;
+      const result = await profileRepository.updateCurrentProfile(profile);
+      if (result.error) console.error('Could not save profile to Supabase; keeping the local profile for this session.', result.error);
+    })();
+  };
 
   const finishOnboarding = (value: Onboarding) => {
     const profile = { ...repository.getProfile(), ...value };
-    repository.updateProfile(profile);
+    saveProfile(profile);
     repository.savePlan(createPlan(createPlanPreferences(profile)));
   };
   const setUnits = (units: WeightUnit) => repository.updateSettings({ ...repository.getSettings(), units });
@@ -173,7 +200,11 @@ export function AppProvider({ children }: PropsWithChildren) {
     repository.addBodyweightEntry(entry);
   };
 
-  const regeneratePlan = (preferences: PlanPreferences) => repository.savePlan(createPlan(preferences));
+  const regeneratePlan = (preferences: PlanPreferences, name?: string) => {
+    const current = repository.getProfile();
+    saveProfile({ ...current, name: name?.trim().slice(0, 40) || current.name, goal: preferences.goal, experience: preferences.experience, frequency: preferences.frequency, equipment: preferences.equipment, duration: preferences.duration, trainingFocus: preferences.focus });
+    repository.savePlan(createPlan(preferences));
+  };
   const startPlanWorkoutAction = (dayIndex: number) => startPlanWorkout(dayIndex);
   const replacePlanExercise = (dayIndex: number, exerciseIndex: number, exerciseId: string) => {
     const day = repository.getActivePlan().days[dayIndex]; const planned = day ? plannedExercises(day) : [];
@@ -205,7 +236,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   const removeFood = (id: string) => repository.removeNutritionEntry(id);
   const appendCoachMessage = (message: Omit<CoachMessage, 'id' | 'timestamp'>) => repository.appendCoachMessage({ ...message, id: createId(), timestamp: Date.now() });
   const clearCoachMessages = () => repository.clearCoachConversation(createId());
-  const updateName = (name: string) => repository.updateProfile({ ...repository.getProfile(), name: name.trim().slice(0, 40) || repository.getProfile().name });
+  const updateName = (name: string) => saveProfile({ ...repository.getProfile(), name: name.trim().slice(0, 40) || repository.getProfile().name });
   const updateWorkoutSettings = (settings: Partial<WorkoutSettings>) => repository.updateSettings({ ...repository.getSettings(), workoutSettings: { ...repository.getSettings().workoutSettings, ...settings } });
   const clearWorkoutHistory = () => repository.clearWorkoutHistory();
   const clearNutritionData = () => repository.clearNutritionEntries();
@@ -215,7 +246,7 @@ export function AppProvider({ children }: PropsWithChildren) {
     repository.resetAllData({ profile: createProfile(fresh), settings: { units: fresh.units, workoutSettings: fresh.workoutSettings }, plan: createPlan(createPlanPreferences(createProfile(fresh)), fresh.plan), coachConversationId: fresh.coachConversationId });
   };
 
-  const value = useMemo(() => ({ state, finishOnboarding, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
+  const value = useMemo(() => ({ state, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
     updateSet, completeSet, setRest, advanceWorkout, skipExercise, replaceExercise, addExercise, replacePlanExercise, addPlanExercise, removePlanExercise,
     togglePause, tickWorkout, finishWorkout, discardWorkout, logBodyWeight, regeneratePlan, addFood, removeFood, appendCoachMessage, clearCoachMessages,
     updateName, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData }), [state]);
