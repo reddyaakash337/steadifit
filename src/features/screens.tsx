@@ -465,9 +465,9 @@ export function EditProfileScreen() {
   const { state, updateName, regeneratePlan } = useSteadiifit();
   const [name, setName] = useState(state.name); const [goal, setGoal] = useState<Goal>(state.goal); const [experience, setExperience] = useState(state.experience); const [frequency, setFrequency] = useState(state.frequency); const [duration, setDuration] = useState(state.duration); const [equipment, setEquipment] = useState(state.equipment); const [focus, setFocus] = useState<TrainingFocus>(state.trainingFocus);
   const save = () => {
-    updateName(name);
     const changed = goal !== state.goal || experience !== state.experience || frequency !== state.frequency || duration !== state.duration || equipment !== state.equipment || focus !== state.trainingFocus;
-    if (changed) regeneratePlan({ goal, experience, frequency, duration, equipment, focus });
+    if (changed) regeneratePlan({ goal, experience, frequency, duration, equipment, focus }, name);
+    else updateName(name);
     router.back();
   };
   const choices = <T extends string | number,>(title: string, values: T[], selected: T, setValue: (value: T) => void) => <><SectionTitle title={title} />{values.map(value => <Option key={String(value)} title={String(value)} selected={selected === value} onPress={() => setValue(value)} />)}</>;
