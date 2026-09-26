@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import Constants from 'expo-constants';
 import { ExerciseCategory, ExerciseDifficulty, exerciseById, exercises, PlanDay, workoutById, workouts } from '@/data/catalog';
@@ -9,7 +9,11 @@ import { SteadiifitColors as C } from '@/constants/theme';
 import { Action, Card, Copy, Empty, Eyebrow, Heading, Option, Pill, Screen, SectionTitle, TopBar, uiStyles } from '@/components/steadiifit-ui';
 import { PrimaryHeader } from '@/components/PrimaryHeader';
 import { ExerciseCard } from '@/components/exercises/ExerciseCard';
-import { bodyWeightChange, calculateExerciseProgress, calculatePersonalRecords, calculateTotalVolume, calculateTotalWorkouts, calculateWeeklyWorkoutCount, calculateWorkoutStreak, calculateWorkoutStats, sortWorkoutsNewest, sortedBodyWeight, startOfWeek, workoutTimestamp } from '@/features/progress';
+import { ExerciseVisual } from '@/components/exercises/ExerciseVisual';
+import { ExerciseGuidanceVisual } from '@/components/exercises/ExerciseGuidanceVisual';
+import { ExerciseDisclosure } from '@/components/exercises/ExerciseDisclosure';
+import { exerciseVisualForId, exerciseVisualForWorkout } from '@/features/exerciseVisuals';
+import { bodyWeightChange, calculateExerciseProgress, calculateMonthlyWorkoutCount, calculatePersonalRecords, calculateTotalVolume, calculateTotalWorkouts, calculateWorkoutStreak, calculateWorkoutStats, sortWorkoutsNewest, sortedBodyWeight, startOfWeek, workoutTimestamp } from '@/features/progress';
 import { currentPlanWeek, equipmentCompatible, planDayFocus, planDayName, planDayStatus, planDayDuration, planWeekProgress, plannedExercises, PlanPreferences, TrainingFocus } from '@/features/plan';
 import { localDateKey, nutritionTotals, recentFoods } from '@/features/nutrition';
 import { calculateNutritionTargets, formatTarget, NutritionTargetValue, targetMidpoint } from '@/features/nutritionTargets';
@@ -29,12 +33,6 @@ const recommendedWorkoutId = (plan: PlanDay[]) => {
   }
   return 'push';
 };
-const recommendedPlanDay = (plan: PlanDay[]) => {
-  const today = (new Date().getDay() + 6) % 7;
-  for (let offset = 0; offset < 7; offset += 1) { const day = plan[(today + offset) % 7]; if (day?.workoutId) return day; }
-  return null;
-};
-
 export function WelcomeScreen() {
   return <Screen style={s.welcome}>
     <View style={s.welcomeBrand}><Eyebrow>STEADIIFIT</Eyebrow><Heading size={40}>Consistency,{ '\n' }quantified.</Heading><Copy>Track every set, watch your progress, and let the plan adapt as you do.</Copy></View>
@@ -117,25 +115,202 @@ export function PlanGeneratedScreen() {
 
 function Stat({ value, label }: { value: string; label: string }) { return <View style={s.stat}><Text style={s.statValue}>{value}</Text><Text style={s.statLabel}>{label}</Text></View>; }
 
+export function TrainScreen() {
+  const { state } = useSteadiifit();
+  const today = (new Date().getDay() + 6) % 7;
+  const [selectedWeekday, setSelectedWeekday] = useState(today);
+  const selectedPlanDay = state.plan.find(day => day.weekday === selectedWeekday);
+  const selectedIsToday = selectedWeekday === today;
+  const selectedStatus = selectedPlanDay ? planDayStatus(selectedPlanDay, state.history) : undefined;
+    const selectedIsActive = Boolean(selectedIsToday && state.activeWorkout);
+  const selectedExercises = selectedPlanDay?.workoutId ? plannedExercises(selectedPlanDay) : [];
+  const futureWorkout = state.plan
+    .filter(day => day.workoutId && day.weekday > selectedWeekday)
+    .sort((a, b) => a.weekday - b.weekday)[0];
+  const weekdayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  const dayName = (weekdayIndex: number) => new Date(2024, 0, 1 + weekdayIndex).toLocaleDateString('en-US', { weekday: 'long' });
+  const selectedTitle = selectedPlanDay?.workoutId ? planDayName(selectedPlanDay) : selectedPlanDay ? 'Rest and recover' : 'No weekly plan';
+  const selectedDetail = selectedPlanDay?.workoutId
+    ? `${selectedExercises.length} exercises · ~${planDayDuration(selectedPlanDay)} min`
+    : selectedPlanDay
+      ? 'Recovery day'
+      : 'Set up a plan to organize your training week.';
+  const selectedAction = () => {
+    if (selectedIsActive && state.activeWorkout) router.push({ pathname: '/active/[id]', params: { id: state.activeWorkout.workoutId } });
+    else if (selectedPlanDay?.workoutId) router.push({ pathname: '/plan/day/[day]', params: { day: String(selectedPlanDay.weekday) } });
+    else if (selectedPlanDay) router.push('/(tabs)/plan');
+    else router.push('/plan/customize');
+  };
+  const selectedActionLabel = selectedIsActive ? 'Resume workout  →' : selectedPlanDay?.workoutId ? 'View workout  →' : selectedPlanDay ? 'View weekly plan  →' : 'Set up plan  →';
+  const latestWorkout = sortWorkoutsNewest(state.history)[0];
+  const latestSetCount = latestWorkout?.exercises.reduce((total, item) => total + item.sets.length, 0) ?? 0;
+  return <Screen>
+    <PrimaryHeader title="Train" />
+    <SectionTitle title="Weekly plan" />
+    {state.plan.length ? <>
+      <View style={n.weekSelector}>
+        {weekdayLabels.map((label, weekdayIndex) => {
+          const day = state.plan.find(item => item.weekday === weekdayIndex);
+          const status = day ? planDayStatus(day, state.history) : undefined;
+          const active = Boolean(day?.workoutId && weekdayIndex === today && state.activeWorkout?.workoutId === day.workoutId);
+          const completed = status === 'Completed';
+          const current = weekdayIndex === today;
+          const mark = active ? '●' : completed ? '✓' : day?.workoutId ? current ? '●' : '○' : '—';
+          return <Pressable key={weekdayIndex} accessibilityRole="button" accessibilityLabel={`${dayName(weekdayIndex)}${day?.workoutId ? `, ${planDayName(day)}` : ', rest day'}`} accessibilityState={{ selected: selectedWeekday === weekdayIndex }} onPress={() => setSelectedWeekday(weekdayIndex)} style={n.weekDayChoice}>
+            <Text style={n.weekDayName}>{label}</Text>
+            <View style={[n.weekDayMark, current && n.weekDayCurrent, selectedWeekday === weekdayIndex && n.weekDaySelected, completed && n.weekDayCompleted]}><Text style={[n.weekDayMarkText, completed && n.weekDayMarkCompleted]}>{mark}</Text></View>
+            <Text numberOfLines={1} style={n.weekDayNumber}>{new Date(startOfWeek(new Date()).getFullYear(), startOfWeek(new Date()).getMonth(), startOfWeek(new Date()).getDate() + weekdayIndex).getDate()}</Text>
+          </Pressable>;
+        })}
+      </View>
+      <View style={n.selectedDayPanel}>
+        <View style={n.selectedDayText}>
+          <Eyebrow>{dayName(selectedWeekday).toUpperCase()}{selectedIsToday ? ' · TODAY' : ''}</Eyebrow>
+          <Text style={n.selectedDayTitle}>{selectedIsActive ? state.activeWorkout?.workoutName : selectedTitle}</Text>
+            <Copy style={n.selectedDayMeta}>{selectedIsActive ? 'Workout in progress · Resume when ready' : selectedStatus === 'Completed' ? `Completed${futureWorkout ? ` · Next ${planDayName(futureWorkout)}` : ''}` : selectedStatus === 'Skipped' ? `Not completed · ${selectedDetail}` : selectedDetail}</Copy>
+        </View>
+        <Pressable accessibilityRole="button" onPress={selectedAction} style={n.selectedDayAction}><Text style={n.selectedDayActionText}>{selectedActionLabel}</Text></Pressable>
+      </View>
+    </> : <View style={n.weekEmpty}>
+      <Text style={n.selectedDayTitle}>No weekly plan yet</Text>
+      <Copy>Set up your schedule to see your training week here.</Copy>
+      <Action title="Set up plan  →" onPress={() => router.push('/plan/customize')} />
+    </View>}
+
+    <SectionTitle title="Training" />
+    <Pressable accessibilityRole="button" onPress={() => router.push('/(tabs)/plan')} style={n.trainDestinationRow}>
+      <View style={n.trainDestinationText}><Text style={n.trainDestinationTitle}>My Plan</Text><Text style={n.trainDestinationMeta}>Manage your detailed weekly schedule</Text></View><Text style={s.chevron}>›</Text>
+    </Pressable>
+    <Pressable accessibilityRole="button" onPress={() => router.push('/(tabs)/workouts')} style={n.trainDestinationRow}>
+      <View style={n.trainDestinationText}><Text style={n.trainDestinationTitle}>Workouts</Text><Text style={n.trainDestinationMeta}>Browse the full workout catalog</Text></View><Text style={s.chevron}>›</Text>
+    </Pressable>
+    <Pressable accessibilityRole="button" onPress={() => router.push('/exercises')} style={n.trainDestinationRow}>
+      <View style={n.trainDestinationText}><Text style={n.trainDestinationTitle}>Exercise Library</Text><Text style={n.trainDestinationMeta}>Browse movements, equipment and muscle groups</Text></View><Text style={s.chevron}>›</Text>
+    </Pressable>
+
+    {latestWorkout ? <>
+      <SectionTitle title="Recent training" action="History" onPress={() => router.push('/history')} />
+      <Card style={n.trainRecentCard} onPress={() => openHistoryItem(latestWorkout.id)}>
+        <View style={s.historyCardTop}><View style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={1} style={s.cardTitle}>{latestWorkout.name}</Text><Copy>{formatDate(workoutTimestamp(latestWorkout))} · {latestSetCount} sets</Copy></View><Text style={s.chevron}>›</Text></View>
+      </Card>
+    </> : null}
+  </Screen>;
+}
+
 export function HomeScreen() {
   const { state, personalInformation, startPlanWorkout } = useSteadiifit();
+  const [heroContentWidth, setHeroContentWidth] = useState(0);
+  const now = new Date();
   const nutrition = nutritionTotals(state.foodEntries);
   const nutritionTargets = calculateNutritionTargets({ dateOfBirth: personalInformation.dateOfBirth, heightCm: personalInformation.heightCm,
     bodyWeightEntries: state.bodyWeightEntries, goal: state.goal, trainingFrequency: state.frequency,
     workoutDurationMinutes: state.duration, trainingFocus: state.trainingFocus }).targets;
-  const today = (new Date().getDay() + 6) % 7;
-  const isTrainingDay = Boolean(state.plan[today]?.workoutId);
-  const planDay = recommendedPlanDay(state.plan); const workoutId = planDay?.workoutId ?? recommendedWorkoutId(state.plan);
-  const workout = workoutById(workoutId); const workoutName = planDay ? planDayName(planDay) : workout.name; const duration = planDay ? planDayDuration(planDay) : workout.duration;
+  const today = (now.getDay() + 6) % 7;
+  const todayPlanIndex = state.plan.findIndex(day => day.weekday === today);
+  const todayPlanDay = todayPlanIndex >= 0 ? state.plan[todayPlanIndex] : undefined;
+  const nextPlanDay = Array.from({ length: 7 }, (_, offset) => state.plan.find(day => day.weekday === (today + offset + 1) % 7 && day.workoutId)).find(Boolean);
+  const activeWorkout = state.activeWorkout;
+  const activeTemplate = activeWorkout ? workouts.find(item => item.id === activeWorkout.workoutId) : undefined;
+  const activeMatchesPlan = Boolean(activeWorkout && todayPlanDay?.workoutId === activeWorkout.workoutId);
+  const planWorkoutName = todayPlanDay?.workoutId ? planDayName(todayPlanDay) : undefined;
+  const workoutName = activeWorkout?.workoutName || planWorkoutName;
+  const isRestDay = !todayPlanDay?.workoutId && !activeWorkout;
+  const dayLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  let workoutFocus: string | undefined;
+  if (activeWorkout && activeMatchesPlan && todayPlanDay) workoutFocus = planDayFocus(todayPlanDay);
+  else if (activeWorkout) workoutFocus = activeTemplate?.focus ?? 'Session in progress';
+  else if (todayPlanDay?.workoutId) workoutFocus = planDayFocus(todayPlanDay);
+  const exerciseCount = activeWorkout?.exercises.length ?? (todayPlanDay?.workoutId ? plannedExercises(todayPlanDay).length : 0);
+  let duration: number | undefined;
+  if (activeWorkout && activeMatchesPlan && todayPlanDay) duration = planDayDuration(todayPlanDay);
+  else if (activeWorkout) duration = activeTemplate?.duration;
+  else if (todayPlanDay?.workoutId) duration = planDayDuration(todayPlanDay);
+  const todayStatus = todayPlanDay?.workoutId ? planDayStatus(todayPlanDay, state.history, now) : undefined;
+  const heroEyebrow = activeWorkout ? 'WORKOUT IN PROGRESS'
+    : todayPlanDay?.workoutId ? 'TODAY’S PLAN'
+      : isRestDay ? 'RECOVERY DAY' : 'YOUR TRAINING PLAN';
+  const heroTitle = activeWorkout ? workoutName
+    : todayPlanDay?.workoutId ? planWorkoutName
+      : isRestDay ? 'Rest and recover' : 'Plan your training';
+  const heroMeta = workoutName
+    ? `${workoutFocus}${duration ? ` · ${duration} min` : ''}${exerciseCount ? ` · ${exerciseCount} exercises` : ''}`
+    : isRestDay && nextPlanDay ? `Next workout · ${new Date(now.getFullYear(), now.getMonth(), now.getDate() + ((nextPlanDay.weekday - today + 7) % 7 || 7)).toLocaleDateString('en-US', { weekday: 'long' })}`
+      : !state.plan.length ? 'Set up a weekly plan that fits your routine.' : 'Your scheduled session is complete for today.';
+  const canStartToday = Boolean(todayPlanDay?.workoutId && todayStatus !== 'Completed');
+  const heroActionLabel = activeWorkout ? 'Continue workout  →'
+    : canStartToday ? 'Start workout  →'
+      : todayPlanDay?.workoutId ? 'View today’s plan  →'
+        : state.plan.length ? 'View training plan  →' : 'Set up plan  →';
+  const heroActionAccessibilityLabel = activeWorkout ? 'Continue active workout'
+    : canStartToday ? 'Start today’s workout'
+      : state.plan.length ? 'View training plan' : 'Set up training plan';
+  const startOrContinue = () => {
+    if (activeWorkout) {
+      router.push({ pathname: '/active/[id]', params: { id: activeWorkout.workoutId } });
+    } else if (todayPlanDay?.workoutId && todayStatus !== 'Completed') {
+      const id = startPlanWorkout(todayPlanIndex);
+      if (id) router.push({ pathname: '/active/[id]', params: { id } });
+    } else if (todayPlanDay) {
+      router.push({ pathname: '/plan/day/[day]', params: { day: String(todayPlanDay.weekday) } });
+    } else if (state.plan.length) {
+      router.push('/(tabs)/plan');
+    } else {
+      router.push('/plan/customize');
+    }
+  };
+  const latestWorkout = sortWorkoutsNewest(state.history, now)[0];
+  const streak = calculateWorkoutStreak(state.history, now);
+  const monthlyWorkouts = calculateMonthlyWorkoutCount(state.history, now);
+  const calorieProgress = nutritionTargets ? Math.min(100, Math.round(nutrition.calories / targetMidpoint(nutritionTargets.calories) * 100)) : 0;
+  const heroExerciseId = activeWorkout
+    ? activeWorkout.exercises[activeWorkout.exerciseIndex]?.exerciseId
+    : todayPlanDay?.workoutId
+      ? exerciseVisualForWorkout(workoutById(todayPlanDay.workoutId))?.exerciseId
+      : undefined;
+  const heroVisual = exerciseVisualForId(heroExerciseId);
   return <Screen>
-    <PrimaryHeader title="Home" /><Eyebrow>YOUR TRAINING, AT A GLANCE</Eyebrow><Heading size={24}>Good to see you, {state.name}.</Heading>
-    <Card style={s.hero}><Eyebrow>{isTrainingDay ? 'TODAY’S WORKOUT' : 'NEXT UP IN YOUR PLAN'}</Eyebrow><Text style={s.heroTitle}>{workoutName}</Text><Text style={s.heroMeta}>{planDay ? planDayFocus(planDay) : workout.focus} · {duration} min · {planDay ? plannedExercises(planDay).length : workout.exerciseIds.length} exercises</Text><Pressable accessibilityRole="button" accessibilityLabel={state.activeWorkout ? 'Continue active workout' : 'Start workout now'} onPress={() => { if (state.activeWorkout) router.push({ pathname: '/active/[id]', params: { id: state.activeWorkout.workoutId } }); else if (planDay) { const id = startPlanWorkout(planDay.day); if (id) router.push({ pathname: '/active/[id]', params: { id } }); } else pushWorkout(workout.id); }} style={s.heroStart}><Text style={s.heroStartText}>{state.activeWorkout ? 'Continue active workout  →' : 'Start workout now  →'}</Text></Pressable></Card>
+    <PrimaryHeader title="SteadiFit" />
+    <Card style={{ ...s.homeHero, ...n.homeHero }}>
+      <View onLayout={event => setHeroContentWidth(event.nativeEvent.layout.width)} style={[n.homeHeroBody, heroContentWidth > 0 && heroContentWidth < 520 && n.homeHeroBodyMobile]}>
+        <View style={n.homeHeroText}>
+          <Eyebrow>{heroEyebrow}</Eyebrow>
+          <Text style={s.homeHeroDate}>{dayLabel}</Text>
+          <Text style={s.homeHeroTitle}>{heroTitle}</Text>
+          <Text style={s.homeHeroMeta} numberOfLines={2}>{heroMeta}</Text>
+        </View>
+        {heroVisual ? <View style={[n.homeHeroVisual, heroContentWidth > 0 && heroContentWidth < 520 ? n.homeHeroVisualMobile : n.homeHeroVisualWide]}><ExerciseVisual exerciseId={heroVisual.exerciseId} style={n.homeHeroVisualImage} /></View> : null}
+      </View>
+      <Pressable accessibilityRole="button" accessibilityLabel={heroActionAccessibilityLabel} onPress={startOrContinue} style={s.homeHeroAction}>
+        <Text style={s.homeHeroActionText}>{heroActionLabel}</Text>
+      </Pressable>
+    </Card>
     <SectionTitle title="Nutrition today" />
     <Card onPress={() => router.push('/(tabs)/nutrition')} style={s.homeNutritionCard}>
-      <View style={s.homeNutritionLine}><Text style={s.cardTitle}>Calories</Text><Text style={s.homeNutritionValue}>{nutrition.calories.toLocaleString()} / {nutritionTargets ? formatTarget(nutritionTargets.calories) : '—'} kcal</Text></View>
-      <View style={s.homeNutritionLine}><Text style={s.cardTitle}>Protein</Text><Text style={s.homeNutritionValue}>{displayNumber(nutrition.protein)} / {nutritionTargets ? `${formatTarget(nutritionTargets.protein)} g` : '—'}</Text></View>
+      <View style={s.homeCaloriesLine}><View><Text style={s.homeNutritionCaption}>CALORIES</Text><View style={s.homeCaloriesValueLine}><Text style={s.homeCalories}>{nutrition.calories.toLocaleString()}</Text><Text style={s.homeCaloriesTarget}>/ {nutritionTargets ? formatTarget(nutritionTargets.calories) : '—'} kcal</Text></View></View><Text style={s.homeNutritionPercent}>{nutritionTargets ? `${calorieProgress}%` : '—'}</Text></View>
+      <View style={s.homeCalorieTrack}><View style={[s.homeCalorieFill, { width: `${calorieProgress}%` }]} /></View>
+      <View style={s.homeMacroList}>
+        {[
+          { label: 'Protein', value: nutrition.protein, target: nutritionTargets?.protein },
+          { label: 'Carbs', value: nutrition.carbs, target: nutritionTargets?.carbohydrates },
+          { label: 'Fat', value: nutrition.fat, target: nutritionTargets?.fat },
+        ].map(macro => <View key={macro.label} style={s.homeMacro}>
+          <Text style={s.homeMacroLabel}>{macro.label}</Text>
+          <Text style={s.homeMacroValue}>{displayNumber(macro.value)} / {macro.target === undefined ? '—' : formatTarget(macro.target)} g</Text>
+        </View>)}
+      </View>
     </Card>
-    <Copy style={s.homeStreak}>Current streak · {calculateWorkoutStreak(state.history)} days</Copy>
+    <SectionTitle title="Consistency" />
+    <View style={s.homeProgressRow}>
+      <View style={s.homeProgressMetric}><Text style={s.homeProgressValue}>{streak}</Text><Text style={s.homeProgressLabel}>day streak</Text></View>
+      <View style={s.homeMetricDivider} />
+      <View style={s.homeProgressMetric}><Text style={s.homeProgressValue}>{monthlyWorkouts}</Text><Text style={s.homeProgressLabel}>workouts this month</Text></View>
+    </View>
+    {latestWorkout ? <>
+      <SectionTitle title="Recent workout" action="History" onPress={() => router.push('/history')} />
+      <Card onPress={() => openHistoryItem(latestWorkout.id)} style={s.homeRecentCard}>
+        <View style={s.homeRecentTop}><View style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={1} style={s.homeRecentTitle}>{latestWorkout.name}</Text><Text style={s.homeRecentMeta}>{formatDate(workoutTimestamp(latestWorkout, now))} · {latestWorkout.duration} min</Text></View><Text style={s.chevron}>›</Text></View>
+      </Card>
+    </> : null}
   </Screen>;
 }
 
@@ -146,7 +321,7 @@ export function PlanScreen() {
   return <Screen><View style={s.planHeader}><View style={{ flex: 1 }}><Eyebrow>YOUR TRAINING, YOUR WAY</Eyebrow><Heading>My Plan</Heading><Copy>A personalized plan shaped around your routine.</Copy></View><Pressable accessibilityRole="button" accessibilityLabel="Customize plan" onPress={() => router.push('/plan/customize')} style={s.customizeIcon}><Text style={s.customizeIconText}>···</Text></Pressable></View>
     <Card style={s.planSummary}><View style={s.planSummaryTop}><View style={{ flex: 1 }}><Text style={s.cardTitle}>{state.goal}</Text><Copy>{state.frequency} training days · {durationPreference} · {state.trainingFocus}</Copy></View><Pill>WEEK {currentPlanWeek(state.planStartedAt)}</Pill></View><View style={s.planMeter}><View style={[s.planMeterFill, { width: `${Math.round(progress.ratio * 100)}%` }]} /></View><Copy style={{ marginTop: 8 }}>{progress.completed} / {progress.planned} workouts completed this week</Copy></Card>
     <SectionTitle title="This week" action="Customize" onPress={() => router.push('/plan/customize')} />
-    {state.plan.slice().sort((a, b) => a.weekday - b.weekday).map(day => { const status = planDayStatus(day, state.history); const rest = !day.workoutId; const title = planDayName(day); const exerciseCount = plannedExercises(day).length; return <Card key={day.id} style={{ ...s.planDayCard, ...(day.weekday === today && !rest ? s.planDayToday : {}) }} onPress={() => router.push({ pathname: '/plan/day/[day]', params: { day: String(day.weekday) } })}><Text style={s.day}>{weekday[day.weekday]}</Text><View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{title}</Text><Copy>{rest ? 'Rest and recover' : `${planDayFocus(day)} · ${planDayDuration(day)} min · ${exerciseCount} exercises`}</Copy></View><View style={s.planDayRight}><Pill green={status === 'Completed'}>{status.toUpperCase()}</Pill><Text style={s.chevron}>›</Text></View></Card>; })}
+    {state.plan.slice().sort((a, b) => a.weekday - b.weekday).map(day => { const status = planDayStatus(day, state.history); const rest = !day.workoutId; const title = planDayName(day); const exerciseCount = plannedExercises(day).length; const visualExerciseId = rest ? undefined : plannedExercises(day).find(item => Boolean(exerciseVisualForId(item.exerciseId)))?.exerciseId; return <Card key={day.id} style={{ ...s.planDayCard, ...(day.weekday === today && !rest ? s.planDayToday : {}) }} onPress={() => router.push({ pathname: '/plan/day/[day]', params: { day: String(day.weekday) } })}><Text style={s.day}>{weekday[day.weekday]}</Text>{visualExerciseId ? <ExerciseVisual exerciseId={visualExerciseId} style={s.planDayImage} /> : null}<View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{title}</Text><Copy>{rest ? 'Rest and recover' : `${planDayFocus(day)} · ${planDayDuration(day)} min · ${exerciseCount} exercises`}</Copy></View><View style={s.planDayRight}><Pill green={status === 'Completed'}>{status.toUpperCase()}</Pill><Text style={s.chevron}>›</Text></View></Card>; })}
   </Screen>;
 }
 
@@ -154,7 +329,7 @@ export function CustomizePlanScreen() {
   const { state, regeneratePlan } = useSteadiifit();
   const [goal, setGoal] = useState<Goal>(state.goal); const [frequency, setFrequency] = useState(state.frequency); const [duration, setDuration] = useState(state.duration); const [equipment, setEquipment] = useState(state.equipment); const [focus, setFocus] = useState<TrainingFocus>(state.trainingFocus);
   const save = () => { regeneratePlan({ goal, experience: state.experience, frequency, equipment, duration, focus }); router.back(); };
-  const choose = <T extends string | number,>(title: string, choices: T[], selected: T, setValue: (value: T) => void) => <><SectionTitle title={title} />{choices.map(choice => <Option key={String(choice)} title={String(choice)} selected={selected === choice} onPress={() => setValue(choice)} />)}</>;
+  const choose = <T extends string | number,>(title: string, values: T[], selected: T, setValue: (value: T) => void) => <><SectionTitle title={title} />{values.map(value => <Option key={String(value)} title={String(value)} selected={selected === value} onPress={() => setValue(value)} />)}</>;
   return <Screen><TopBar title="Customize plan" /><Eyebrow>PLAN PREFERENCES</Eyebrow><Heading>Make this plan yours.</Heading><Copy>Regenerating updates future planned workouts. Your workout history and progress stay as they are.</Copy>
     {choose<Goal>('Primary goal', ['Build muscle', 'Get stronger', 'Lose fat', 'Stay consistent'], goal, setGoal)}
     {choose<number>('Training days', [2, 3, 4, 5, 6], frequency, setFrequency)}
@@ -182,36 +357,34 @@ export function PlanDayDetailScreen({ dayIndex }: { dayIndex: number }) {
   </Screen>;
 }
 
-export function TrainScreen() {
-  return <Screen>
-    <PrimaryHeader title="Train" /><Copy>Plan your week, choose a workout, or find an exercise.</Copy>
-    <SectionTitle title="Choose a destination" />
-    <Card onPress={() => router.push('/(tabs)/plan')} style={{ marginBottom: 10 }}>
-      <View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>My Plan</Text><Text style={s.chevron}>›</Text></View>
-      <Copy>Review your weekly schedule and customize planned sessions.</Copy>
-    </Card>
-    <Card onPress={() => router.push('/(tabs)/workouts')} style={{ marginBottom: 10 }}>
-      <View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>Workouts</Text><Text style={s.chevron}>›</Text></View>
-      <Copy>Browse workout templates and start a session.</Copy>
-    </Card>
-    <Card onPress={() => router.push('/exercises')}>
-      <View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>Exercise Library</Text><Text style={s.chevron}>›</Text></View>
-      <Copy>Search exercises and review movement details.</Copy>
-    </Card>
-  </Screen>;
-}
-
 export function WorkoutsScreen() {
   const { state } = useSteadiifit();
   const [search, setSearch] = useState(''); const [category, setCategory] = useState('All');
   const featured = workoutById(recommendedWorkoutId(state.plan));
   const categories = ['All', 'Strength', 'Full Body'];
   const filtered = useMemo(() => workouts.filter(workout => workout.name.toLowerCase().includes(search.toLowerCase()) && (category === 'All' || (category === 'Full Body' ? workout.id === 'full' : workout.id !== 'full'))), [search, category]);
+  const workoutCards = useMemo(() => {
+    let previousVisualId: string | undefined;
+    return filtered.map(workout => {
+      const visual = exerciseVisualForWorkout(workout, previousVisualId);
+      if (visual) previousVisualId = visual.exerciseId;
+      return { workout, visual };
+    });
+  }, [filtered]);
   return <Screen><Heading>Workouts</Heading><Copy>Find a session that fits your plan.</Copy>
     <SectionTitle title="Today's recommendation" /><Card style={s.recommend} onPress={() => pushWorkout(featured.id)}><Pill>RECOMMENDED</Pill><Text style={[s.cardTitle, { marginTop: 9 }]}>{featured.name}</Text><Copy>{featured.duration} min · {featured.focus}</Copy></Card>
     <SectionTitle title="Workout library" /><TextInput value={search} onChangeText={setSearch} placeholder="Search workouts" placeholderTextColor={C.muted} style={uiStyles.input} />
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>{categories.map(item => <Pressable key={item} onPress={() => setCategory(item)} style={[s.chip, category === item && s.chipActive]}><Text style={[s.chipText, category === item && s.chipTextActive]}>{item}</Text></Pressable>)}</ScrollView>
-    {filtered.length ? filtered.map(workout => <Card key={workout.id} onPress={() => pushWorkout(workout.id)}><Text style={s.cardTitle}>{workout.name}</Text><View style={s.pills}><Pill>{workout.difficulty}</Pill><Pill>{workout.duration} min</Pill></View><Copy style={{ marginTop: 8 }}>{workout.description}</Copy></Card>) : <Empty title="No workouts found" detail="Try changing your search or category." />}
+    {workoutCards.length ? workoutCards.map(({ workout, visual }) => <Card key={workout.id} style={s.workoutDiscoveryCard} onPress={() => pushWorkout(workout.id)}>
+      <View style={s.workoutDiscoveryRow}>
+        <View style={s.workoutVisualPanel}>{visual ? <ExerciseVisual exerciseId={visual.exerciseId} style={s.workoutVisualImage} /> : <Text numberOfLines={2} style={s.workoutVisualFallback}>{workout.focus}</Text>}</View>
+        <View style={s.workoutDiscoveryInfo}>
+          <Text numberOfLines={2} style={s.cardTitle}>{workout.name}</Text>
+          <View style={s.workoutMeta}><Pill>{workout.difficulty}</Pill><Pill>{workout.duration} min</Pill></View>
+          <Copy numberOfLines={3} style={s.workoutDescription}>{workout.description}</Copy>
+        </View>
+      </View>
+    </Card>) : <Empty title="No workouts found" detail="Try changing your search or category." />}
   </Screen>;
 }
 
@@ -260,7 +433,7 @@ export function ActiveWorkoutScreen({ id }: { id: string }) {
     <View style={s.sessionTop}><Text style={s.sessionElapsed}>{formatTime(session.elapsedSeconds)}</Text><Pill>{session.paused ? 'PAUSED' : 'IN PROGRESS'}</Pill></View>
     <Eyebrow>{atEnd ? 'WORKOUT COMPLETE' : `EXERCISE ${session.exerciseIndex + 1} OF ${session.exercises.length}`}</Eyebrow><View style={s.progressTrack}><View style={[s.progressFill, { width: `${Math.min(100, ((session.exerciseIndex + (session.setIndex / Math.max(1, current?.sets.length ?? 1))) / Math.max(1, session.exercises.length)) * 100)}%` }]} /></View>
     {!atEnd && <><Heading>{exercise.name}</Heading><Copy>{exercise.muscle} · {exercise.equipment} · {current.targetSets} sets × {current.targetReps} reps</Copy>
-      <Card style={{ marginTop: 16 }}><Eyebrow>FORM CUE</Eyebrow><Copy>{exercise.cue}</Copy></Card>
+      <ExerciseGuidanceVisual mode="illustration" exerciseId={current.exerciseId} fallbackLabel={`${exercise.muscle} · ${exercise.equipment}`} />
       <SectionTitle title="Your sets" action={`${session.setIndex + 1} / ${current.sets.length}`} />
       {current.sets.map((set, setIndex) => { const shownWeight = convertWeight(set.weight, session.units, state.units); return <Pressable key={set.id} onPress={() => !set.completed && updateSet(shownWeight, set.reps)} style={[s.loggedSet, setIndex === session.setIndex && s.loggedSetCurrent, set.completed && s.loggedSetDone]}><Text style={s.loggedSetLabel}>{set.completed ? '✓' : `SET ${setIndex + 1}`}</Text><Text style={s.loggedSetValue}>{set.weight ? `${formatWeight(set.weight, session.units, state.units)} ${state.units}` : 'Bodyweight'}  ×  {set.reps} {current.repUnit}</Text></Pressable>; })}
       {currentSet && !currentSet.completed && <Card style={s.adjustCard}><Text style={s.adjustHeading}>Log this set</Text><View style={s.adjustRow}>{[['Weight', convertWeight(currentSet.weight, session.units, state.units), (n: number) => updateSet(n, currentSet.reps)], [current.repUnit === 'reps' ? 'Reps' : 'Duration', currentSet.reps, (n: number) => updateSet(convertWeight(currentSet.weight, session.units, state.units), n)]].map(([label, value, update] : any, itemIndex) => <View key={label} style={s.adjustField}><Text style={s.adjustLabel}>{label} {itemIndex === 0 ? `(${state.units})` : current.repUnit !== 'reps' ? `(${current.repUnit})` : ''}</Text><View style={s.stepper}><Pressable style={s.stepperButton} onPress={() => update(Math.max(0, Number(value) - (itemIndex === 0 ? (state.units === 'kg' ? 2.5 : 5) : current.repUnit === 'sec' ? 5 : 1)))}><Text style={s.stepperText}>−</Text></Pressable><Text style={s.stepValue}>{itemIndex === 0 ? formatWeight(Number(value), state.units, state.units) : value}</Text><Pressable style={s.stepperButton} onPress={() => update(Number(value) + (itemIndex === 0 ? (state.units === 'kg' ? 2.5 : 5) : current.repUnit === 'sec' ? 5 : 1))}><Text style={s.stepperText}>+</Text></Pressable></View></View>)}</View></Card>}
@@ -370,6 +543,7 @@ export function ExerciseDetailsScreen({ id }: { id: string }) {
   const previousUnit = previous?.units ?? 'kg';
   const bestWeight = previousSets.reduce((best, set) => Math.max(best, convertWeight(set.weight, previousUnit, state.units)), 0);
   const bestReps = previousSets.reduce((best, set) => Math.max(best, set.reps), 0);
+  const visual = exerciseVisualForId(exercise.id);
   const active = state.activeWorkout; const activeExercise = active?.exercises[active.exerciseIndex];
   const start = () => {
     if (active) {
@@ -382,36 +556,161 @@ export function ExerciseDetailsScreen({ id }: { id: string }) {
   };
   return <Screen>
     <TopBar title="Exercise details" right={<Pressable accessibilityRole="button" accessibilityLabel={state.favoriteExerciseIds.includes(exercise.id) ? 'Remove from favorites' : 'Add to favorites'} onPress={() => toggleFavorite(exercise.id)} style={s.detailFavorite}><Text style={s.detailFavoriteIcon}>{state.favoriteExerciseIds.includes(exercise.id) ? '♥' : '♡'}</Text></Pressable>} />
-    <View style={s.demoHero}><View style={s.demoBar}><View style={s.demoPlate} /><View style={s.demoGrip} /><View style={s.demoPlate} /></View><Text style={s.demoKicker}>MOVEMENT PREVIEW</Text><Text style={s.demoLabel}>{exercise.demo}</Text><Copy style={s.demoCopy}>A visual guide for {exercise.name.toLowerCase()}.</Copy></View>
+    {visual ? <View style={[s.exerciseIllustrationFrame, visual.orientation === 'landscape' ? s.exerciseIllustrationLandscape : s.exerciseIllustrationPortrait]}><ExerciseVisual exerciseId={exercise.id} style={s.exerciseIllustrationImage} /></View> : <View style={s.demoHero}><View style={s.demoBar}><View style={s.demoPlate} /><View style={s.demoGrip} /><View style={s.demoPlate} /></View><Text style={s.demoKicker}>MOVEMENT PREVIEW</Text><Text style={s.demoLabel}>{exercise.demo}</Text><Copy style={s.demoCopy}>A visual guide for {exercise.name.toLowerCase()}.</Copy></View>}
     <Heading>{exercise.name}</Heading><Copy>{exercise.category} · {exercise.difficulty}</Copy>
     <SectionTitle title="Muscles & equipment" /><View style={s.detailInfoGrid}><Card style={s.detailInfo}><Eyebrow>PRIMARY</Eyebrow><Text style={s.cardTitle}>{exercise.primaryMuscles.join(', ')}</Text></Card><Card style={s.detailInfo}><Eyebrow>SECONDARY</Eyebrow><Text style={s.cardTitle}>{exercise.secondaryMuscles.length ? exercise.secondaryMuscles.join(', ') : '—'}</Text></Card><Card style={s.detailInfo}><Eyebrow>EQUIPMENT</Eyebrow><Text style={s.cardTitle}>{exercise.equipment}</Text></Card><Card style={s.detailInfo}><Eyebrow>DIFFICULTY</Eyebrow><Text style={s.cardTitle}>{exercise.difficulty}</Text></Card></View>
     <SectionTitle title="Recommended" /><View style={s.statsRow}><Stat value={`${exercise.sets}`} label="Sets" /><Stat value={exercise.repRange} label="Reps / time" /><Stat value={`${exercise.restSeconds}s`} label="Rest" /></View>
-    <SectionTitle title="How to perform" />{exercise.instructions.map((instruction, index) => <View key={instruction} style={s.instructionRow}><Text style={s.instructionNumber}>{String(index + 1).padStart(2, '0')}</Text><Copy style={s.instructionText}>{instruction}</Copy></View>)}
-    <SectionTitle title="Form tips" />{exercise.formTips.map(tip => <Card key={tip} style={s.tipCard}><Text style={s.tipMark}>✓</Text><Copy style={s.tipCopy}>{tip}</Copy></Card>)}
-    <SectionTitle title="Common mistakes" />{exercise.commonMistakes.map(mistake => <View key={mistake} style={s.mistakeRow}><Text style={s.mistakeMark}>•</Text><Copy style={s.instructionText}>{mistake}</Copy></View>)}
+    <SectionTitle title="Form Tips" />{exercise.formTips.map(tip => <View key={tip} style={s.detailFormTip}><Text style={s.tipMark}>✓</Text><Copy style={s.detailFormTipText}>{tip}</Copy></View>)}
+    <ExerciseDisclosure title="How to perform">{exercise.instructions.map((instruction, index) => <View key={instruction} style={s.instructionRow}><Text style={s.instructionNumber}>{String(index + 1).padStart(2, '0')}</Text><Copy style={s.instructionText}>{instruction}</Copy></View>)}</ExerciseDisclosure>
+    <ExerciseDisclosure title="Common mistakes">{exercise.commonMistakes.map(mistake => <View key={mistake} style={s.mistakeRow}><Text style={s.mistakeMark}>•</Text><Copy style={s.instructionText}>{mistake}</Copy></View>)}</ExerciseDisclosure>
     <SectionTitle title="Previous performance" />{previous && previousExercise ? <Card><Eyebrow>LAST PERFORMANCE · {previous.date.toUpperCase()}</Eyebrow>{previousSets.map((set, index) => <Text key={`${previous.id}-${index}`} style={s.performanceSet}>{set.weight ? `${formatWeight(set.weight, previousUnit, state.units)} ${state.units}` : 'Bodyweight'} × {set.reps} {exercise.repRange.toLowerCase().includes('min') ? 'min' : exercise.repRange.toLowerCase().includes('sec') ? 'sec' : 'reps'}</Text>)}<View style={s.performanceMeta}><Copy>Best weight  <Text style={s.performanceValue}>{bestWeight ? `${formatWeight(bestWeight, state.units, state.units)} ${state.units}` : 'Bodyweight'}</Text></Copy><Copy>Best {exercise.repRange.toLowerCase().includes('min') ? 'time' : exercise.repRange.toLowerCase().includes('sec') ? 'hold' : 'reps'}  <Text style={s.performanceValue}>{bestReps}{exercise.repRange.toLowerCase().includes('min') ? ' min' : exercise.repRange.toLowerCase().includes('sec') ? ' sec' : ''}</Text></Copy></View><Copy style={{ marginTop: 8 }}>Last trained {previous.date}</Copy></Card> : <Empty title="No previous performance" detail="Complete this exercise to start tracking your progress." />}
     <Action title={active ? 'Use in active workout  →' : 'Start Exercise  →'} onPress={start} />
   </Screen>;
 }
 
 export function ProgressScreen() {
-  const { state } = useSteadiifit(); const now = new Date(); const weekly = calculateWeeklyWorkoutCount(state.history, now); const records = calculatePersonalRecords(state.history, now, state.units);
+  const { state } = useSteadiifit();
+  const now = new Date();
+  const records = calculatePersonalRecords(state.history, now, state.units);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1));
+  const monthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
+  const nextMonthStart = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1);
+  const monthWorkoutCount = state.history.filter(item => {
+    const timestamp = workoutTimestamp(item, now);
+    return timestamp >= monthStart.getTime() && timestamp < nextMonthStart.getTime();
+  }).length;
+  const weekdayOffset = (monthStart.getDay() + 6) % 7;
+  const daysInMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate();
+  const calendarCellCount = Math.ceil((weekdayOffset + daysInMonth) / 7) * 7;
+  const calendarCells = Array.from({ length: calendarCellCount }, (_, index) => {
+    const dayNumber = index - weekdayOffset + 1;
+    return dayNumber > 0 && dayNumber <= daysInMonth
+      ? new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), dayNumber)
+      : null;
+  });
+  const completedDateKeys = new Set(state.history.map(item => new Date(workoutTimestamp(item, now)).toDateString()));
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const todayKey = localDateKey(now);
   const nutritionHistory = [...new Set(state.foodEntries.map(entry => entry.date))].filter(date => date < todayKey).sort((a, b) => b.localeCompare(a)).slice(0, 3);
-  const nutritionDateLabel = (value: string) => { const [year, month, day] = value.split('-').map(Number); return new Date(year, month - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: year !== now.getFullYear() ? 'numeric' : undefined }); };
-  const days = Array.from({ length: 7 }, (_, index) => { const date = startOfWeek(now); date.setDate(date.getDate() + index); const key = date.toDateString(); const done = state.history.some(item => new Date(workoutTimestamp(item, now)).toDateString() === key); return { date, done }; });
-  const exercisesWithHistory = [...new Set(state.history.flatMap(item => item.exercises.filter(ex => ex.sets.some(set => set.completed !== false)).map(ex => ex.exerciseId)))];
-  const recent = sortWorkoutsNewest(state.history, now).slice(0, 3); const weightEntries = sortedBodyWeight(state.bodyWeightEntries); const currentWeight = weightEntries[0]; const change = bodyWeightChange(state.bodyWeightEntries);
-  return <Screen><PrimaryHeader title="Progress" /><Copy>Your training, at a glance.</Copy>
-    {!state.history.length ? <Empty title="Your progress starts here" detail="Complete a workout and your stats, consistency, and strength history will appear here." /> : <>
-      <View style={s.progressGrid}><ProgressStat label="Current streak" value={`${calculateWorkoutStreak(state.history, now)} days`} /><ProgressStat label="This week" value={`${weekly} workouts`} /><ProgressStat label="Workouts" value={`${calculateTotalWorkouts(state.history)}`} /><ProgressStat label="Training volume" value={`${Math.round(calculateTotalVolume(state.history, state.units)).toLocaleString()} ${state.units}`} /></View>
-      <SectionTitle title="Weekly consistency" /><Card><View style={s.weekDays}>{days.map(({ date, done }) => <View key={date.toISOString()} style={s.weekDay}><View style={[s.weekDot, done && s.weekDotDone]}><Text style={[s.weekCheck, done && { color: '#FFF' }]}>{done ? '✓' : ''}</Text></View><Text style={s.weekLabel}>{date.toLocaleDateString('en-US', { weekday: 'short' })}</Text></View>)}</View><Copy style={{ marginTop: 11 }}>{weekly} {weekly === 1 ? 'workout' : 'workouts'} completed this week</Copy></Card>
-      <SectionTitle title="Recent activity" action="History" onPress={() => router.push('/history')} />{recent.map(item => { const stats = calculateWorkoutStats(item, state.units); return <Card key={item.id} onPress={() => openHistoryItem(item.id)}><Text style={s.cardTitle}>{item.name}</Text><Copy>{formatDate(workoutTimestamp(item, now))} · {item.duration} min · {stats.exerciseCount} exercises</Copy><Copy style={{ marginTop: 4 }}>{Math.round(stats.volume).toLocaleString()} {state.units} volume</Copy></Card>; })}
-      <SectionTitle title="Strength progress" />{exercisesWithHistory.length ? exercisesWithHistory.map(id => { const exercise = exerciseById(id); const progress = calculateExerciseProgress(state.history, id, now, state.units); if (!progress) return null; return <Card key={id} onPress={() => router.push({ pathname: '/progress/exercise/[id]', params: { id } })}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{exercise.name}</Text><Text style={s.linkArrow}>›</Text></View><Copy>Best · {progress.bestWeight > 0 ? `${progress.bestWeight.toFixed(1).replace(/\.0$/, '')} ${state.units}` : 'Bodyweight'} × {progress.bestReps} reps</Copy><Copy style={{ marginTop: 4 }}>{progress.sessions} sessions · {Math.round(progress.totalVolume).toLocaleString()} {state.units} volume · Last {formatDate(progress.lastPerformed)}</Copy></Card>; }) : <Empty title="No performance data yet" detail="Logged exercise performances will be tracked here." />}
-      <SectionTitle title="Personal records" />{records.length ? records.map(record => <Card key={record.exerciseId}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{exerciseById(record.exerciseId).name}</Text><Pill green>BEST</Pill></View><Copy>{formatWeight(record.weight, state.units, state.units)} {state.units} × {record.reps} reps · {formatDate(record.date)}</Copy></Card>) : <Empty title="No records yet" detail="Complete a weighted set to establish your first personal record." />}
+  const nutritionDateLabel = (value: string) => {
+    const [year, month, day] = value.split('-').map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: year !== now.getFullYear() ? 'numeric' : undefined,
+    });
+  };
+  const exercisesWithHistory = [...new Set(state.history.flatMap(item =>
+    item.exercises.filter(exercise => exercise.sets.some(set => set.completed !== false)).map(exercise => exercise.exerciseId),
+  ))];
+  const recent = sortWorkoutsNewest(state.history, now).slice(0, 3);
+  const weightEntries = sortedBodyWeight(state.bodyWeightEntries);
+  const currentWeight = weightEntries[0];
+  const change = bodyWeightChange(state.bodyWeightEntries);
+  const showPreviousMonth = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
+  const showNextMonth = () => setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1));
+  const canShowNextMonth = calendarMonth < currentMonthStart;
+
+  return <Screen>
+    <PrimaryHeader title="Progress" />
+    <Copy>Your training, at a glance.</Copy>
+    <SectionTitle title="Monthly activity" />
+    <View style={n.monthCalendar}>
+      <View style={n.monthCalendarHeader}>
+        <Text style={n.monthTitle}>{calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</Text>
+        <View style={n.monthControls}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Previous month" onPress={showPreviousMonth} style={n.monthControl}>
+            <Text style={n.monthControlText}>‹</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next month"
+            accessibilityState={{ disabled: !canShowNextMonth }}
+            disabled={!canShowNextMonth}
+            onPress={showNextMonth}
+            style={[n.monthControl, !canShowNextMonth && n.monthControlDisabled]}
+          >
+            <Text style={n.monthControlText}>›</Text>
+          </Pressable>
+        </View>
+      </View>
+      <View style={n.monthCalendarGrid}>
+        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, index) =>
+          <Text key={`${label}-${index}`} style={n.monthWeekday}>{label}</Text>,
+        )}
+        {calendarCells.map((date, index) => {
+          if (!date) return <View key={`blank-${index}`} style={n.monthDayCell} />;
+          const completed = completedDateKeys.has(date.toDateString());
+          const isToday = date.toDateString() === now.toDateString();
+          return <View key={date.toISOString()} style={[n.monthDayCell, isToday && n.monthDayToday]}>
+            <Text style={[n.monthDayNumber, isToday && n.monthDayNumberToday]}>{date.getDate()}</Text>
+            {completed ? <View style={[n.monthActivityDot, isToday && n.monthActivityDotToday]} /> : null}
+          </View>;
+        })}
+      </View>
+      <Copy style={n.monthSummary}>
+        {monthWorkoutCount} {monthWorkoutCount === 1 ? 'workout' : 'workouts'} completed this month
+      </Copy>
+    </View>
+    {!state.history.length ? <Empty
+      title="Your progress starts here"
+      detail="Complete a workout and your stats, consistency, and strength history will appear here."
+    /> : <>
+      <View style={s.progressGrid}>
+        <ProgressStat label="Current streak" value={`${calculateWorkoutStreak(state.history, now)} days`} />
+        <ProgressStat label="This month" value={`${monthWorkoutCount} workouts`} />
+        <ProgressStat label="Workouts" value={`${calculateTotalWorkouts(state.history)}`} />
+        <ProgressStat label="Training volume" value={`${Math.round(calculateTotalVolume(state.history, state.units)).toLocaleString()} ${state.units}`} />
+      </View>
+      <SectionTitle title="Recent activity" action="History" onPress={() => router.push('/history')} />
+      {recent.map(item => {
+        const stats = calculateWorkoutStats(item, state.units);
+        return <Card key={item.id} onPress={() => openHistoryItem(item.id)}>
+          <Text style={s.cardTitle}>{item.name}</Text>
+          <Copy>{formatDate(workoutTimestamp(item, now))} · {item.duration} min · {stats.exerciseCount} exercises</Copy>
+          <Copy style={{ marginTop: 4 }}>{Math.round(stats.volume).toLocaleString()} {state.units} volume</Copy>
+        </Card>;
+      })}
+      <SectionTitle title="Strength progress" />
+      {exercisesWithHistory.length ? exercisesWithHistory.map(id => {
+        const exercise = exerciseById(id);
+        const progress = calculateExerciseProgress(state.history, id, now, state.units);
+        if (!progress) return null;
+        return <Card key={id} onPress={() => router.push({ pathname: '/progress/exercise/[id]', params: { id } })}>
+          <View style={s.historyCardTop}>
+            <Text style={[s.cardTitle, { flex: 1 }]}>{exercise.name}</Text>
+            <Text style={s.linkArrow}>›</Text>
+          </View>
+          <Copy>Best · {progress.bestWeight > 0 ? `${progress.bestWeight.toFixed(1).replace(/\.0$/, '')} ${state.units}` : 'Bodyweight'} × {progress.bestReps} reps</Copy>
+          <Copy style={{ marginTop: 4 }}>{progress.sessions} sessions · {Math.round(progress.totalVolume).toLocaleString()} {state.units} volume · Last {formatDate(progress.lastPerformed)}</Copy>
+        </Card>;
+      }) : <Empty title="No performance data yet" detail="Logged exercise performances will be tracked here." />}
+      <SectionTitle title="Personal records" />
+      {records.length ? records.map(record => <Card key={record.exerciseId}>
+        <View style={s.historyCardTop}>
+          <Text style={[s.cardTitle, { flex: 1 }]}>{exerciseById(record.exerciseId).name}</Text>
+          <Pill green>BEST</Pill>
+        </View>
+        <Copy>{formatWeight(record.weight, state.units, state.units)} {state.units} × {record.reps} reps · {formatDate(record.date)}</Copy>
+      </Card>) : <Empty title="No records yet" detail="Complete a weighted set to establish your first personal record." />}
     </>}
-    <SectionTitle title="Body weight" /><Card onPress={() => router.push('/progress/body-weight')}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{currentWeight ? `${formatWeight(currentWeight.weight, currentWeight.units, state.units)} ${state.units}` : 'No weight entries yet'}</Text><Text style={s.chevron}>›</Text></View><Copy>{currentWeight ? change === null ? 'Current body weight · log another entry to see a change' : `${change > 0 ? '+' : ''}${formatWeight(change, currentWeight.units, state.units)} ${state.units} since previous entry` : 'Log a body weight to start your personal trend.'}</Copy></Card>
-    <SectionTitle title="Nutrition history" />{nutritionHistory.length ? nutritionHistory.map(date => { const totals = nutritionTotals(state.foodEntries, date); return <Card key={date}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{nutritionDateLabel(date)}</Text><Text style={s.nutritionHistoryCalories}>{totals.calories.toLocaleString()} kcal</Text></View><Copy>{totals.meals} {totals.meals === 1 ? 'food entry' : 'food entries'} · Protein {displayNumber(totals.protein)} g · Carbs {displayNumber(totals.carbs)} g · Fat {displayNumber(totals.fat)} g</Copy></Card>; }) : <Copy style={s.nutritionHistoryEmpty}>Past daily totals will appear here after you log food on another day.</Copy>}
+    <SectionTitle title="Body weight" />
+    <Card onPress={() => router.push('/progress/body-weight')}>
+      <View style={s.historyCardTop}>
+        <Text style={[s.cardTitle, { flex: 1 }]}>{currentWeight ? `${formatWeight(currentWeight.weight, currentWeight.units, state.units)} ${state.units}` : 'No weight entries yet'}</Text>
+        <Text style={s.chevron}>›</Text>
+      </View>
+      <Copy>{currentWeight ? change === null ? 'Current body weight · log another entry to see a change' : `${change > 0 ? '+' : ''}${formatWeight(change, currentWeight.units, state.units)} ${state.units} since previous entry` : 'Log a body weight to start your personal trend.'}</Copy>
+    </Card>
+    <SectionTitle title="Nutrition history" />
+    {nutritionHistory.length ? nutritionHistory.map(date => {
+      const totals = nutritionTotals(state.foodEntries, date);
+      return <Card key={date}>
+        <View style={s.historyCardTop}>
+          <Text style={[s.cardTitle, { flex: 1 }]}>{nutritionDateLabel(date)}</Text>
+          <Text style={s.nutritionHistoryCalories}>{totals.calories.toLocaleString()} kcal</Text>
+        </View>
+        <Copy>{totals.meals} {totals.meals === 1 ? 'food entry' : 'food entries'} · Protein {displayNumber(totals.protein)} g · Carbs {displayNumber(totals.carbs)} g · Fat {displayNumber(totals.fat)} g</Copy>
+      </Card>;
+    }) : <Copy style={s.nutritionHistoryEmpty}>Past daily totals will appear here after you log food on another day.</Copy>}
   </Screen>;
 }
 
@@ -426,7 +725,7 @@ export function ExerciseProgressScreen({ id }: { id: string }) {
 export function BodyWeightScreen() {
   const { state, logBodyWeight } = useSteadiifit(); const [value, setValue] = useState(''); const entries = sortedBodyWeight(state.bodyWeightEntries); const change = bodyWeightChange(entries);
   const save = () => { const weight = Number(value.replace(',', '.')); if (!Number.isFinite(weight) || weight <= 0) return; logBodyWeight(weight); setValue(''); };
-  return <Screen><TopBar title="Body weight" /><Heading>Body weight</Heading><Copy>Track your check-ins over time. Values are shown in your selected unit.</Copy>{entries[0] ? <Card style={{ marginTop: 12 }}><Eyebrow>CURRENT</Eyebrow><Text style={s.chartValue}>{formatWeight(entries[0].weight, entries[0].units, state.units)} {state.units}</Text><Copy>{change === null ? 'Log another entry to see your change.' : `${change > 0 ? '+' : ''}${formatWeight(change, entries[0].units, state.units)} ${state.units} since your previous entry`}</Copy></Card> : <Empty title="No weight entries yet" detail="Log your first check-in to start a personal body weight history." />}<SectionTitle title="Log a weight" /><TextInput accessibilityLabel={`Body weight in ${state.units}`} keyboardType="decimal-pad" value={value} onChangeText={setValue} placeholder={`Weight in ${state.units}`} placeholderTextColor={C.muted} style={uiStyles.input} /><Action title="Save weight" disabled={!Number.isFinite(Number(value.replace(',', '.'))) || Number(value.replace(',', '.')) <= 0} onPress={save} /><SectionTitle title="Previous entries" />{entries.length ? entries.map(entry => <Card key={entry.id}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{formatDate(entry.recordedAt)}</Text><Text style={s.weightValue}>{formatWeight(entry.weight, entry.units, state.units)} {state.units}</Text></View></Card>) : <Empty title="Nothing logged yet" detail="Your previous entries will be listed here." />}</Screen>;
+  return <Screen><TopBar title="Body weight" /><Heading>Body weight</Heading><Copy>Track your check-ins over time. Values are shown in your selected unit.</Copy>{entries[0] ? <Card style={{ marginTop: 12 }}><Eyebrow>CURRENT</Eyebrow><Text style={s.chartValue}>{formatWeight(entries[0].weight, entries[0].units, state.units)} {state.units}</Text><Copy>{change === null ? 'Log another entry to see your change.' : `${change > 0 ? '+' : ''}${formatWeight(change, entries[0].units, state.units)} ${state.units} since previous entry`}</Copy></Card> : <Empty title="No weight entries yet" detail="Log your first check-in to start a personal body weight history." />}<SectionTitle title="Log a weight" /><TextInput accessibilityLabel={`Body weight in ${state.units}`} keyboardType="decimal-pad" value={value} onChangeText={setValue} placeholder={`Weight in ${state.units}`} placeholderTextColor={C.muted} style={uiStyles.input} /><Action title="Save weight" disabled={!Number.isFinite(Number(value.replace(',', '.'))) || Number(value.replace(',', '.')) <= 0} onPress={save} /><SectionTitle title="Previous entries" />{entries.length ? entries.map(entry => <Card key={entry.id}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{formatDate(entry.recordedAt)}</Text><Text style={s.weightValue}>{formatWeight(entry.weight, entry.units, state.units)} {state.units}</Text></View></Card>) : <Empty title="Nothing logged yet" detail="Your previous entries will be listed here." />}</Screen>;
 }
 
 function ProgressStat({ label, value }: { label: string; value: string }) { return <View style={s.progressStat}><Text style={s.progressStatValue} numberOfLines={1}>{value}</Text><Text style={s.progressStatLabel}>{label}</Text></View>; }
@@ -462,7 +761,106 @@ function nutritionStatusLabel(status: NutritionStatus): string {
   return 'Normal';
 }
 
+const n = StyleSheet.create({
+  homeHeroBody: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  homeHeroBodyMobile: { gap: 8 },
+  homeHeroText: { flex: 1, minWidth: 0 },
+  homeHeroVisual: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent' },
+  homeHero: { width: '100%', maxWidth: 1120, alignSelf: 'center' },
+  homeHeroVisualWide: { width: '36%', maxWidth: 380, height: 246 },
+  homeHeroVisualMobile: { width: '48%', maxWidth: 180, height: 182 },
+  homeHeroVisualImage: { width: '100%', height: '100%' },
+  screen: { maxWidth: 1240 },
+  summary: { gap: 20, alignItems: 'stretch', marginTop: 8, marginBottom: 10 },
+  calorieCard: { minHeight: 250, justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 24, borderRadius: 16 },
+  calorieCardMobile: { minHeight: 195, paddingHorizontal: 20, paddingVertical: 20 },
+  calorieValue: { fontSize: 38, lineHeight: 44 },
+  calorieTrack: { height: 11, marginTop: 14 },
+  calorieFill: { height: 11 },
+  macroPanel: { minHeight: 250, paddingHorizontal: 24, paddingVertical: 18, justifyContent: 'space-around', borderRadius: 16 },
+  macroPanelMobile: { minHeight: 230, paddingHorizontal: 20, paddingVertical: 15 },
+  macroRow: { paddingVertical: 12 },
+  macroName: { fontSize: 14 },
+  macroTotal: { fontSize: 14 },
+  macroTrack: { height: 7, marginTop: 9 },
+  macroFill: { height: 7 },
+  macroStatus: { fontSize: 10, marginTop: 6 },
+  mealGroup: { marginTop: 18, marginBottom: 5, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: C.line },
+  mealHeading: { minHeight: 58, marginBottom: 12, paddingHorizontal: 2, borderBottomColor: C.line },
+  mealTitle: { fontSize: 22 },
+  foodCard: { paddingHorizontal: 16, paddingVertical: 16, marginBottom: 8, borderRadius: 12, backgroundColor: C.surface, borderColor: C.line },
+  insightCard: { paddingHorizontal: 14, paddingVertical: 11, marginBottom: 6, backgroundColor: C.wash, borderColor: C.wash, borderRadius: 12 },
+  insightMarker: { width: 3, height: 24, borderRadius: 2, backgroundColor: C.accent },
+  trainFeatureGrid: { flexDirection: 'column', gap: 8 },
+  trainFeatureGridWide: { flexDirection: 'row', alignItems: 'flex-start', gap: 22 },
+  trainFeatureColumn: { minWidth: 0 },
+  trainFeatureColumnWide: { flex: 1 },
+  trainTodayCard: { backgroundColor: C.ink, borderColor: C.ink, padding: 17, marginBottom: 0 },
+  trainTodayRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  trainTodayInfo: { flex: 1, minWidth: 0 },
+  trainTodayTitle: { color: '#FFF', fontFamily: 'BricolageBold', fontSize: 25, lineHeight: 30, marginBottom: 5 },
+  trainTodayMeta: { color: '#D2CEC3', fontSize: 12, lineHeight: 18 },
+  trainTodayVisual: { width: '38%', maxWidth: 240, height: 210, alignItems: 'center', justifyContent: 'center', backgroundColor: 'transparent' },
+  trainTodayVisualMobile: { width: '44%', maxWidth: 160, height: 166 },
+  trainTodayVisualImage: { width: '100%', height: '100%' },
+  quickStartList: { gap: 10, paddingBottom: 2 },
+  quickStartCard: { width: 138, minHeight: 137, padding: 10, borderRadius: 14, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface },
+  quickStartVisual: { height: 62, borderRadius: 9, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', padding: 5, marginBottom: 7 },
+  quickStartImage: { width: '100%', height: '100%' },
+  quickStartFallback: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, lineHeight: 14, textAlign: 'center' },
+  quickStartTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14 },
+  quickStartMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 10, marginTop: 2 },
+  trainRecommendedCard: { padding: 10, marginBottom: 8, borderRadius: 14 },
+  trainRecommendedRow: { minHeight: 82, flexDirection: 'row', alignItems: 'center', gap: 11 },
+  trainRecommendedVisual: { width: 82, height: 82, borderRadius: 10, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', padding: 6 },
+  trainRecommendedImage: { width: '100%', height: '100%' },
+  trainRecommendedFallback: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, lineHeight: 14, textAlign: 'center' },
+  trainRecommendedInfo: { flex: 1, minWidth: 0 },
+  trainRecommendedTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14, marginBottom: 3 },
+  trainRecommendedMeta: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10 },
+  trainRecommendedDescription: { color: C.muted, fontFamily: 'InterRegular', fontSize: 11, lineHeight: 15, marginTop: 4 },
+  trainDestinationRow: { minHeight: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.line },
+  trainDestinationText: { flex: 1, minWidth: 0 },
+  trainDestinationTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14 },
+  trainDestinationMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 12, marginTop: 3 },
+  trainRecentCard: { paddingVertical: 12, marginBottom: 0 },
+  weekSelector: { flexDirection: 'row', justifyContent: 'space-between', gap: 4, paddingVertical: 9, borderTopWidth: 1, borderBottomWidth: 1, borderColor: C.line },
+  weekDayChoice: { flex: 1, minWidth: 0, alignItems: 'center', gap: 5, paddingVertical: 5 },
+  weekDayName: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10 },
+  weekDayMark: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent' },
+  weekDayCurrent: { borderColor: C.accent },
+  weekDaySelected: { backgroundColor: C.wash },
+  weekDayCompleted: { backgroundColor: C.ink },
+  weekDayMarkText: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 12 },
+  weekDayMarkCompleted: { color: '#FFF' },
+  weekDayNumber: { color: C.ink, fontFamily: 'InterRegular', fontSize: 10 },
+  selectedDayPanel: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, borderBottomWidth: 1, borderColor: C.line },
+  selectedDayText: { flex: 1, minWidth: 0 },
+  selectedDayTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 21, lineHeight: 26, marginBottom: 3 },
+  selectedDayMeta: { fontSize: 12, lineHeight: 18 },
+  selectedDayAction: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 12 },
+  selectedDayActionText: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12 },
+  weekEmpty: { paddingVertical: 16, borderTopWidth: 1, borderBottomWidth: 1, borderColor: C.line },
+  monthCalendar: { width: '100%', maxWidth: 680, alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 15, borderRadius: 16, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface },
+  monthCalendarHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 11 },
+  monthTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 20 },
+  monthControls: { flexDirection: 'row', gap: 6 },
+  monthControl: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 17, backgroundColor: C.wash },
+  monthControlDisabled: { opacity: 0.35 },
+  monthControlText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 22, lineHeight: 25 },
+  monthCalendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+  monthWeekday: { width: `${100 / 7}%`, textAlign: 'center', color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, paddingVertical: 7 },
+  monthDayCell: { width: `${100 / 7}%`, height: 43, alignItems: 'center', justifyContent: 'center', gap: 3, borderRadius: 9 },
+  monthDayToday: { backgroundColor: C.wash, borderWidth: 1, borderColor: C.accent },
+  monthDayNumber: { color: C.ink, fontFamily: 'InterRegular', fontSize: 12 },
+  monthDayNumberToday: { fontFamily: 'InterBold', color: C.accent },
+  monthActivityDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: C.accent },
+  monthActivityDotToday: { backgroundColor: C.ink },
+  monthSummary: { textAlign: 'center', fontSize: 11, marginTop: 9 },
+});
+
 export function NutritionScreen() {
+  const { width } = useWindowDimensions();
   const { state, personalInformation, removeFood } = useSteadiifit();
   const [entryToDelete, setEntryToDelete] = useState<NutritionEntry | null>(null);
   const entries = state.foodEntries.filter(item => { const now = new Date(); const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; return item.date === date; });
@@ -473,20 +871,24 @@ export function NutritionScreen() {
   const targets = estimate.targets;
   const macro = (label: string, value: number, target: NutritionTargetValue | undefined) => {
     const midpoint = target ? targetMidpoint(target) : 0; const status = nutritionStatus(value, target); const tone = nutritionStatusStyle(status);
-    return <View key={label} style={[s.macroCard, { borderColor: tone.borderColor, backgroundColor: tone.backgroundColor }]}><View style={s.macroHead}><Text style={s.cardTitle}>{label}</Text><Text style={s.macroTotal}>{displayNumber(value)} / {target ? formatTarget(target) : '—'} g</Text></View><View style={s.macroTrack}><View style={[s.macroFill, { backgroundColor: tone.fill, width: `${target && midpoint > 0 ? Math.min(100, Math.round(value / midpoint * 100)) : 0}%` }]} /></View><Text style={[s.macroRemaining, { color: tone.text }]}>{target ? nutritionStatusLabel(status) : 'Target unavailable'}</Text></View>;
+    return <View key={label} style={[s.nutritionMacroRow, n.macroRow, label === 'Fat' && s.nutritionMacroRowLast]}><View style={s.nutritionMacroTop}><Text style={[s.nutritionMacroName, n.macroName]}>{label}</Text><Text style={[s.nutritionMacroTotal, n.macroTotal]}>{displayNumber(value)} / {target ? formatTarget(target) : '—'} g</Text></View><View style={[s.nutritionMacroTrack, n.macroTrack]}><View style={[s.nutritionMacroFill, n.macroFill, { backgroundColor: tone.fill, width: `${target && midpoint > 0 ? Math.min(100, Math.round(value / midpoint * 100)) : 0}%` }]} /></View><Text style={[s.nutritionMacroStatus, n.macroStatus, { color: tone.text }]}>{target ? nutritionStatusLabel(status) : 'Target unavailable'}</Text></View>;
   };
   const missingFields = estimate.missingInformation;
   const missingMessage = missingFields.length === 1 ? `Add your ${missingFields[0]}` : `Add your ${missingFields.slice(0, -1).join(', ')} and ${missingFields[missingFields.length - 1]}`;
   const insights = !entries.length ? ['You haven’t logged any food today.'] : [targets ? totals.protein >= targets.protein ? 'Protein target completed.' : `Protein is ${displayNumber(Math.max(0, targets.protein - totals.protein))}g below the target.` : `${missingMessage} in Personal Information to calculate nutrition targets.`, `You've logged ${totals.meals} ${totals.meals === 1 ? 'food item' : 'food items'} today.`];
   const caloriesStatus = nutritionStatus(totals.calories, targets?.calories); const caloriesTone = nutritionStatusStyle(caloriesStatus);
   const addMeal = (meal: FoodMeal) => router.push({ pathname: '/nutrition/add', params: { meal } });
-  return <Screen><PrimaryHeader title="Nutrition" /><Eyebrow>TODAY · ESTIMATED TARGETS</Eyebrow>
-    <Card style={{ ...s.calorieCard, borderColor: caloriesTone.borderColor, backgroundColor: caloriesTone.backgroundColor }}><View style={s.calorieHeading}><View><Eyebrow>CALORIES</Eyebrow><Text style={s.calorieValue}>{totals.calories.toLocaleString()}<Text style={s.calorieTarget}> / {targets ? formatTarget(targets.calories) : '—'} kcal</Text></Text></View><Text style={[s.calorieGlyph, { color: caloriesTone.fill }]}>◒</Text></View><View style={s.calorieTrack}><View style={[s.calorieFill, { backgroundColor: caloriesTone.fill, width: `${targets ? Math.min(100, Math.round(totals.calories / targetMidpoint(targets.calories) * 100)) : 0}%` }]} /></View><Copy style={{ marginTop: 8, color: caloriesTone.text }}>{targets ? nutritionStatusLabel(caloriesStatus) : 'Target unavailable'}</Copy></Card>
-    <View style={s.macroGrid}>{macro('Protein', totals.protein, targets?.protein)}{macro('Carbs', totals.carbs, targets?.carbohydrates)}{macro('Fat', totals.fat, targets?.fat)}</View>
+  return <Screen style={{ ...s.nutritionScreen, ...n.screen }}><PrimaryHeader title="Nutrition" /><Eyebrow>TODAY · ESTIMATED TARGETS</Eyebrow>
+    <View style={[s.nutritionSummary, width < 620 && s.nutritionSummaryNarrow, n.summary]}>
+      <Card style={width < 620
+        ? { ...s.calorieCard, ...n.calorieCard, ...n.calorieCardMobile, borderColor: caloriesTone.borderColor, backgroundColor: caloriesTone.backgroundColor, flex: 0, width: '100%' }
+        : { ...s.calorieCard, ...n.calorieCard, borderColor: caloriesTone.borderColor, backgroundColor: caloriesTone.backgroundColor }}><View style={s.calorieHeading}><View><Eyebrow>CALORIES</Eyebrow><Text style={[s.calorieValue, n.calorieValue]}>{totals.calories.toLocaleString()}<Text style={s.calorieTarget}> / {targets ? formatTarget(targets.calories) : '—'} kcal</Text></Text></View><Text style={[s.calorieGlyph, { color: caloriesTone.fill }]}>◒</Text></View><View style={[s.calorieTrack, n.calorieTrack]}><View style={[s.calorieFill, n.calorieFill, { backgroundColor: caloriesTone.fill, width: `${targets ? Math.min(100, Math.round(totals.calories / targetMidpoint(targets.calories) * 100)) : 0}%` }]} /></View><Copy style={{ marginTop: 8, color: caloriesTone.text }}>{targets ? nutritionStatusLabel(caloriesStatus) : 'Target unavailable'}</Copy></Card>
+      <View style={[s.nutritionMacroPanel, width < 620 && s.nutritionSummaryChildNarrow, n.macroPanel, width < 620 && n.macroPanelMobile]}>{macro('Protein', totals.protein, targets?.protein)}{macro('Carbs', totals.carbs, targets?.carbohydrates)}{macro('Fat', totals.fat, targets?.fat)}</View>
+    </View>
     {!targets ? <Card style={s.targetNote}><Text style={s.cardTitle}>Complete Personal Information for targets</Text><Copy>{missingMessage} in Personal Information to calculate your calorie and macro targets. No default targets are substituted.</Copy><Action title="Personal Information" secondary onPress={() => router.push('/profile/personal-information')} /></Card> : <Copy style={s.targetDisclaimer}>Estimated from your profile and training goal. Sex is not collected, so calorie targets show a range.</Copy>}
     <SectionTitle title="Today's meals" />
-    {meals.map(meal => { const mealEntries = entries.filter(entry => entry.meal === meal); return <View key={meal}><SectionTitle title={meal} action={`+ Add ${meal}`} onPress={() => addMeal(meal)} />{mealEntries.map(entry => <Card key={entry.id} style={s.foodCard}><View style={s.foodRow}><View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{entry.name}</Text><Copy>{entry.quantity !== undefined ? `${displayNumber(entry.quantity)} ${entry.servingUnit ?? 'servings'} · ` : entry.servingUnit ? `${entry.servingUnit} · ` : ''}{entry.calories} kcal · P {displayNumber(entry.protein)}g · C {displayNumber(entry.carbs)}g · F {displayNumber(entry.fat)}g · estimated</Copy></View><Pressable accessibilityRole="button" accessibilityLabel={`Edit ${entry.name}`} onPress={() => router.push({ pathname: '/nutrition/add', params: { entryId: entry.id } })} hitSlop={8}><Text style={s.nutritionCoachLink}>Edit</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${entry.name}`} onPress={() => setEntryToDelete(entry)} hitSlop={10}><Text style={s.removeFood}>×</Text></Pressable></View></Card>)}</View>; })}
-    <SectionTitle title="Nutrition insights" />{insights.map((insight, index) => <Card key={index} style={s.insightCard}><Text style={s.insightMark}>✦</Text><Copy style={{ flex: 1 }}>{insight}</Copy></Card>)}
+    {meals.map(meal => { const mealEntries = entries.filter(entry => entry.meal === meal); return <View key={meal} style={[s.nutritionMealGroup, n.mealGroup]}><View style={[s.nutritionMealHeading, n.mealHeading]}><Text style={[s.nutritionMealTitle, n.mealTitle]}>{meal}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Add ${meal}`} onPress={() => addMeal(meal)} hitSlop={8} style={s.nutritionMealAdd}><Text style={s.nutritionMealAddText}>+ Add</Text></Pressable></View>{mealEntries.map(entry => <Card key={entry.id} style={{ ...s.foodCard, ...n.foodCard }}><View style={s.foodRow}><View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{entry.name}</Text><Copy>{entry.quantity !== undefined ? `${displayNumber(entry.quantity)} ${entry.servingUnit ?? 'servings'} · ` : entry.servingUnit ? `${entry.servingUnit} · ` : ''}{entry.calories} kcal · P {displayNumber(entry.protein)}g · C {displayNumber(entry.carbs)}g · F {displayNumber(entry.fat)}g · estimated</Copy></View><Pressable accessibilityRole="button" accessibilityLabel={`Edit ${entry.name}`} onPress={() => router.push({ pathname: '/nutrition/add', params: { entryId: entry.id } })} hitSlop={8}><Text style={s.nutritionCoachLink}>Edit</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${entry.name}`} onPress={() => setEntryToDelete(entry)} hitSlop={10}><Text style={s.removeFood}>×</Text></Pressable></View></Card>)}</View>; })}
+    <SectionTitle title="Nutrition insights" />{insights.map((insight, index) => <Card key={index} style={{ ...s.insightCard, ...n.insightCard }}><View style={n.insightMarker} /><Copy style={{ flex: 1 }}>{insight}</Copy></Card>)}
     <Modal visible={Boolean(entryToDelete)} transparent animationType="fade" onRequestClose={() => setEntryToDelete(null)}><View style={s.modalShade}><View style={s.confirmCard}><Eyebrow>PLEASE CONFIRM</Eyebrow><Heading size={22}>Delete food entry?</Heading><Copy>Remove {entryToDelete?.name} from your nutrition log?</Copy><Pressable accessibilityRole="button" onPress={() => { if (entryToDelete) removeFood(entryToDelete.id); setEntryToDelete(null); }} style={s.destructiveAction}><Text style={s.destructiveText}>Delete entry</Text></Pressable><Action title="Cancel" secondary onPress={() => setEntryToDelete(null)} /></View></View></Modal>
   </Screen>;
 }
@@ -536,11 +938,10 @@ export function AddFoodScreen() {
   };
   return <Screen><TopBar title={isEditing ? 'Edit food' : 'Add food'} /><Eyebrow>FOOD LOG</Eyebrow><Heading>{isEditing ? 'Edit entry' : reuseId && sourceEntry ? 'Quick re-add' : 'Add a meal'}</Heading>
     <Copy>{isEditing ? 'Update this entry in your nutrition log.' : reuseId && sourceEntry ? 'Confirm or adjust this saved food before adding it today.' : 'Nutrition values are estimates entered by you; Steadiifit does not analyze arbitrary dishes.'}</Copy>
-    <SectionTitle title="Food name" /><TextInput accessibilityLabel="Food name" value={name} onChangeText={setName} placeholder="e.g. Greek yogurt" placeholderTextColor={C.muted} style={uiStyles.input} maxLength={60} />
+    <SectionTitle title="Food name" /><TextInput accessibilityLabel="Food name" value={name} onChangeText={setName} maxLength={40} placeholder="e.g. Greek yogurt" placeholderTextColor={C.muted} style={uiStyles.input} />
     {!isEditing ? <View style={s.mealSuggestions}><Copy>{suggestions.length ? `Previously logged for ${meal}` : `No saved ${meal.toLowerCase()} foods yet`}</Copy><View style={s.suggestionChips}>{suggestions.map(({ entry }) => <Pressable key={entry.id} accessibilityRole="button" accessibilityLabel={`Use ${entry.name}, ${entry.calories} calories`} onPress={() => chooseSuggestion(entry)} style={s.suggestionChip}><Text numberOfLines={1} style={s.suggestionChipTitle}>{entry.name}</Text><Text style={s.suggestionChipMeta}>{entry.calories} kcal</Text></Pressable>)}</View></View> : null}
     <SectionTitle title="Serving (optional)" /><View style={{ flexDirection: 'row', gap: 8 }}><TextInput accessibilityLabel="Quantity" value={quantity} onChangeText={setQuantity} placeholder="Quantity" placeholderTextColor={C.muted} keyboardType="decimal-pad" style={[uiStyles.input, { flex: 1 }]} maxLength={8} /><TextInput accessibilityLabel="Serving unit" value={servingUnit} onChangeText={setServingUnit} placeholder="g, scoop, plate" placeholderTextColor={C.muted} style={[uiStyles.input, { flex: 2 }]} maxLength={30} /></View>
     <SectionTitle title="Estimated nutrition for this entry" /><View style={s.foodFields}>{field('Calories', 'calories', 'kcal')}{field('Protein', 'protein', 'g')}{field('Carbs', 'carbs', 'g')}{field('Fat', 'fat', 'g')}</View>
-    <SectionTitle title="Meal" />{meals.map(item => <Option key={item} title={item} selected={meal === item} onPress={() => setMeal(item)} />)}
     {error ? <Copy style={s.formError}>{error}</Copy> : null}<Action title={isEditing ? 'Save changes' : 'Add food'} disabled={!valid} onPress={save} /><Action title="Cancel" secondary onPress={() => router.back()} />
   </Screen>;
 }
@@ -733,9 +1134,9 @@ const s = StyleSheet.create({
   progressTrack: { height: 5, backgroundColor: C.line, borderRadius: 4, overflow: 'hidden', marginBottom: 19 }, progressFill: { height: 5, backgroundColor: C.ink },
   loading: { flex: 1, backgroundColor: C.background, alignItems: 'center', justifyContent: 'center', gap: 10 },
   primaryHeader: { height: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }, headerButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }, headerAvatar: { borderRadius: 20, backgroundColor: C.ink }, hamburger: { width: 20, height: 16, justifyContent: 'space-between', paddingVertical: 1 }, hamburgerLine: { width: 20, height: 2, borderRadius: 1, backgroundColor: C.ink }, primaryHeaderTitle: { flex: 1, textAlign: 'center', color: C.ink, fontFamily: 'BricolageBold', fontSize: 17 }, drawerShade: { flex: 1, flexDirection: 'row', backgroundColor: 'rgba(21,20,15,0.42)' }, drawerPanel: { width: 310, maxWidth: '84%', height: '100%', backgroundColor: C.background, paddingTop: 22, paddingHorizontal: 18 }, drawerHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 5, paddingBottom: 14, borderBottomWidth: 1, borderColor: C.line }, drawerClose: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' }, drawerCloseText: { color: C.muted, fontSize: 27, lineHeight: 30 }, drawerItem: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderColor: C.line, paddingHorizontal: 5 }, drawerItemText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14 }, brand: { fontFamily: 'BricolageBold', fontSize: 18, color: C.ink }, avatarBig: { width: 56, height: 56, borderRadius: 28, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, avatarLabel: { color: '#FFF', fontFamily: 'InterBold', fontSize: 16 },
-  hero: { backgroundColor: C.ink, borderColor: C.ink, marginTop: 12 }, heroTitle: { color: '#FFF', fontFamily: 'BricolageExtraBold', fontSize: 24, marginTop: 5 }, heroMeta: { color: '#D2CEC3', fontFamily: 'InterRegular', fontSize: 12, marginTop: 5 }, heroStart: { alignItems: 'center', paddingVertical: 9 }, heroStartText: { color: '#FFF', fontFamily: 'InterBold', fontSize: 13 },
+  homeHero: { backgroundColor: C.ink, borderColor: C.ink, marginTop: 1, marginBottom: 15, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 18, borderRadius: 20, overflow: 'hidden' }, homeHeroImage: { borderRadius: 20, opacity: 0.32 }, homeHeroDate: { color: '#D2CEC3', fontFamily: 'InterSemiBold', fontSize: 12, marginTop: 1 }, homeHeroTitle: { color: '#FFF', fontFamily: 'BricolageExtraBold', fontSize: 31, lineHeight: 36, marginTop: 13 }, homeHeroMeta: { color: '#D2CEC3', fontFamily: 'InterRegular', fontSize: 13, lineHeight: 19, marginTop: 7 }, homeHeroAction: { minHeight: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: C.accent, borderRadius: 12, marginTop: 18, paddingHorizontal: 16 }, homeHeroActionText: { color: '#FFF', fontFamily: 'InterBold', fontSize: 14 },
   cardTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14, marginBottom: 5 }, statsRow: { flexDirection: 'row', gap: 8, marginTop: 9 }, stat: { flex: 1, minHeight: 62, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surface, borderColor: C.line, borderWidth: 1, borderRadius: 14 }, statValue: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 17 }, statLabel: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, marginTop: 3 },
-  planRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13 }, day: { color: C.muted, fontSize: 11, fontWeight: '700', width: 34 }, chevron: { color: C.muted, fontSize: 22 }, recommend: { backgroundColor: '#FBF7F1', borderColor: '#D8C4AD' }, pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 10 }, chips: { gap: 7, paddingBottom: 12 }, chip: { borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingHorizontal: 13, paddingVertical: 8 }, chipActive: { backgroundColor: C.ink, borderColor: C.ink }, chipText: { color: C.ink, fontSize: 12, fontWeight: '600' }, chipTextActive: { color: '#FFF' }, prescription: { marginTop: 9, color: C.accent, fontSize: 12, fontWeight: '700' },
+  planRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13 }, day: { color: C.muted, fontSize: 11, fontWeight: '700', width: 34 }, planDayImage: { width: 50, height: 50, borderRadius: 8, backgroundColor: C.wash }, chevron: { color: C.muted, fontSize: 22 }, recommend: { backgroundColor: '#FBF7F1', borderColor: '#D8C4AD', paddingVertical: 13 }, workoutDiscoveryCard: { padding: 10 }, workoutDiscoveryRow: { flexDirection: 'row', alignItems: 'stretch', gap: 12 }, workoutVisualPanel: { width: 96, height: 104, borderRadius: 12, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', padding: 7 }, workoutVisualImage: { width: '100%', height: '100%' }, workoutVisualFallback: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, lineHeight: 14, textAlign: 'center' }, workoutDiscoveryInfo: { flex: 1, minWidth: 0, justifyContent: 'center' }, workoutMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }, workoutDescription: { fontSize: 12, lineHeight: 17, marginTop: 6 }, pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 10 }, chips: { gap: 7, paddingBottom: 12 }, chip: { borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingHorizontal: 13, paddingVertical: 8 }, chipActive: { backgroundColor: C.ink, borderColor: C.ink }, chipText: { color: C.ink, fontSize: 12, fontWeight: '600' }, chipTextActive: { color: '#FFF' }, prescription: { marginTop: 9, color: C.accent, fontSize: 12, fontWeight: '700' },
   planHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 }, customizeIcon: { width: 42, height: 42, borderWidth: 1, borderColor: C.line, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surface }, customizeIconText: { fontSize: 22, color: C.ink, lineHeight: 24, marginTop: -8 }, planSummary: { marginTop: 16 }, planSummaryTop: { flexDirection: 'row', alignItems: 'center', gap: 10 }, planMeter: { height: 6, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden', marginTop: 14 }, planMeterFill: { height: 6, borderRadius: 4, backgroundColor: C.accent }, planDayCard: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 13 }, planDayToday: { borderColor: C.accent, backgroundColor: '#FBF7F1' }, planDayRight: { alignItems: 'flex-end', gap: 5 }, planExerciseActions: { flexDirection: 'row', gap: 18, marginTop: 10 }, planExerciseLink: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12, paddingVertical: 4 },
   setRow: { flexDirection: 'row', gap: 7 }, setButton: { flex: 1, minHeight: 40, borderRadius: 10, borderWidth: 1, borderColor: C.line, alignItems: 'center', justifyContent: 'center' }, setButtonDone: { backgroundColor: C.green, borderColor: C.green }, setButtonText: { color: C.ink, fontSize: 11, fontWeight: '700' },
   sessionMenu: { fontSize: 20, color: C.ink, paddingHorizontal: 8 }, sessionTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }, sessionElapsed: { fontFamily: 'BricolageBold', fontSize: 22, color: C.ink },
@@ -748,7 +1149,7 @@ const s = StyleSheet.create({
   favoriteCount: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12 }, searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, exerciseSearch: { flex: 1, marginBottom: 8 }, clearSearch: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 19, backgroundColor: C.wash, marginTop: 1 }, clearSearchText: { color: C.ink, fontSize: 23, lineHeight: 25 },
   exerciseToolbar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 9 }, filterButton: { borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingHorizontal: 12, paddingVertical: 8 }, filterButtonText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, favoriteToggle: { borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingHorizontal: 12, paddingVertical: 8 }, favoriteToggleText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, resultCount: { flex: 1, textAlign: 'right', color: C.muted, fontFamily: 'InterRegular', fontSize: 11 }, selectedFilters: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 8 }, clearFilters: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12, padding: 7 },
   filterSheet: { backgroundColor: C.background, padding: 20, paddingBottom: 30, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '88%' }, filterChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 4, marginBottom: 16 }, filterChoice: { borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingHorizontal: 11, paddingVertical: 8, marginBottom: 2 }, filterChoiceActive: { backgroundColor: C.ink, borderColor: C.ink }, filterChoiceText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, filterChoiceTextActive: { color: '#FFF' },
-  detailFavorite: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center' }, detailFavoriteIcon: { color: C.accent, fontSize: 20 }, demoHero: { height: 210, borderRadius: 20, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', marginBottom: 19, overflow: 'hidden' }, demoBar: { height: 8, width: 160, backgroundColor: C.accent, borderRadius: 5, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }, demoGrip: { height: 22, width: 52, backgroundColor: C.ink, borderRadius: 5 }, demoPlate: { width: 22, height: 58, borderRadius: 7, backgroundColor: C.ink }, demoKicker: { color: C.muted, fontFamily: 'InterBold', fontSize: 9, letterSpacing: 1.1 }, demoLabel: { color: C.accent, fontFamily: 'InterBold', fontSize: 13, marginTop: 5 }, demoCopy: { fontSize: 11, marginTop: 3 }, detailInfoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, detailInfo: { width: '48%', marginBottom: 0, flexGrow: 1 },
+  detailFavorite: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center' }, detailFavoriteIcon: { color: C.accent, fontSize: 20 }, demoHero: { height: 210, borderRadius: 20, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', marginBottom: 19, overflow: 'hidden' }, exerciseIllustrationFrame: { width: '100%', maxWidth: 560, alignSelf: 'center', borderRadius: 20, backgroundColor: C.wash, overflow: 'hidden', marginBottom: 19 }, exerciseIllustrationLandscape: { aspectRatio: 1.7, maxHeight: 225 }, exerciseIllustrationPortrait: { width: '88%', aspectRatio: 1.25, maxHeight: 300 }, exerciseIllustrationImage: { width: '100%', height: '100%' }, demoBar: { height: 8, width: 160, backgroundColor: C.accent, borderRadius: 5, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }, demoGrip: { height: 22, width: 52, backgroundColor: C.ink, borderRadius: 5 }, demoPlate: { width: 22, height: 58, borderRadius: 7, backgroundColor: C.ink }, demoKicker: { color: C.muted, fontFamily: 'InterBold', fontSize: 9, letterSpacing: 1.1 }, demoLabel: { color: C.accent, fontFamily: 'InterBold', fontSize: 13, marginTop: 5 }, demoCopy: { fontSize: 11, marginTop: 3 }, detailInfoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, detailInfo: { width: '48%', marginBottom: 0, flexGrow: 1 }, detailFormTip: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 5 }, detailFormTipText: { flex: 1, fontSize: 13, lineHeight: 19 },
   instructionRow: { flexDirection: 'row', gap: 12, paddingVertical: 13, borderBottomWidth: 1, borderColor: C.line }, instructionNumber: { color: C.accent, fontFamily: 'BricolageBold', fontSize: 16, width: 26 }, instructionText: { flex: 1 }, tipCard: { flexDirection: 'row', gap: 9, paddingVertical: 12 }, tipMark: { color: C.green, fontFamily: 'InterBold', fontSize: 15 }, tipCopy: { flex: 1 }, mistakeRow: { flexDirection: 'row', gap: 9, paddingVertical: 7 }, mistakeMark: { color: C.accent, fontSize: 17 }, performanceSet: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14, paddingVertical: 4 }, performanceMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }, performanceValue: { color: C.ink, fontFamily: 'InterBold' },
   chartValue: { color: C.ink, fontSize: 23, fontWeight: '800', marginTop: 4 }, chartBars: { height: 105, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', marginTop: 12 }, bar: { width: 16, backgroundColor: C.accent, borderRadius: 5 },
   progressGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }, progressStat: { width: '48%', flexGrow: 1, minHeight: 75, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, borderRadius: 15, padding: 13, justifyContent: 'center' }, progressStatValue: { fontFamily: 'BricolageBold', fontSize: 18, color: C.ink }, progressStatLabel: { fontFamily: 'InterRegular', color: C.muted, fontSize: 11, marginTop: 4 },
@@ -757,7 +1158,7 @@ const s = StyleSheet.create({
   profileHead: { flexDirection: 'row', alignItems: 'center', gap: 13, marginVertical: 13 }, profileRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 }, profileValue: { color: C.ink, fontSize: 13, fontWeight: '700' }, unitRow: { flexDirection: 'row', gap: 8, marginTop: 12 }, unit: { minWidth: 54, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: C.line, borderRadius: 16 }, unitSelected: { backgroundColor: C.ink, borderColor: C.ink }, unitText: { color: C.ink, textAlign: 'center', fontWeight: '700' },
   profileHero: { marginTop: 6, padding: 18 }, profileHeroRow: { flexDirection: 'row', alignItems: 'center', gap: 14 }, profileName: { marginBottom: 3 }, profileLinkCard: { minHeight: 72, flexDirection: 'row', alignItems: 'center', paddingVertical: 14 }, settingsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
   unitChoiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }, unitChoice: { flexGrow: 1, minHeight: 42, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: C.line, borderRadius: 13, paddingHorizontal: 10, paddingVertical: 9 }, unitChoiceActive: { backgroundColor: C.ink, borderColor: C.ink }, unitChoiceText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, textAlign: 'center' }, unitChoiceTextActive: { color: '#FFF' }, restChoice: { minWidth: 68, minHeight: 42, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: C.line, borderRadius: 13, paddingHorizontal: 14, paddingVertical: 9 }, switch: { width: 52, height: 32, borderRadius: 16, backgroundColor: C.line, padding: 3, justifyContent: 'center' }, switchOn: { backgroundColor: C.green }, switchThumb: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#FFF', alignSelf: 'flex-start' }, switchThumbOn: { alignSelf: 'flex-end' }, dataNotice: { fontSize: 12, marginBottom: 10 }, resetCard: { borderColor: '#D8B7A8', backgroundColor: '#FBF5F1' }, confirmCard: { backgroundColor: C.background, padding: 22, paddingBottom: 18, borderRadius: 22, marginHorizontal: 20, width: '90%', maxWidth: 430, alignSelf: 'center' }, destructiveAction: { minHeight: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: '#A04435', borderRadius: 14, marginTop: 16, marginBottom: 8, paddingHorizontal: 16 }, destructiveText: { color: '#FFF', fontFamily: 'InterBold', fontSize: 14 }, aboutBrand: { marginTop: 20, paddingVertical: 22 }, aboutFootnote: { fontSize: 11, marginTop: 13 },
-  homeNutritionCard: { marginBottom: 5, borderColor: '#D8C4AD', backgroundColor: '#FBF7F1' }, homeNutritionLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, homeNutritionValue: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 13 }, homeStreak: { marginTop: 8, marginBottom: 5, fontFamily: 'InterSemiBold', fontSize: 11 }, nutritionHistoryCalories: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, nutritionHistoryEmpty: { marginTop: 6, marginBottom: 10 },
-  macroGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, macroCard: { flexGrow: 1, width: '48%', minWidth: '47%', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 15, padding: 11 }, macroHead: { gap: 4 }, macroTotal: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, macroTrack: { height: 6, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden', marginTop: 8 }, macroFill: { height: 6, borderRadius: 4 }, macroRemaining: { fontFamily: 'InterSemiBold', fontSize: 10, marginTop: 7 }, calorieCard: { marginTop: 8, backgroundColor: C.surface, paddingVertical: 13 }, calorieHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, calorieValue: { color: C.ink, fontFamily: 'BricolageExtraBold', fontSize: 25, marginTop: 2 }, calorieTarget: { color: C.muted, fontFamily: 'InterRegular', fontSize: 13 }, calorieGlyph: { fontSize: 30, color: C.accent }, calorieTrack: { height: 7, borderRadius: 5, backgroundColor: C.line, overflow: 'hidden', marginTop: 9 }, calorieFill: { height: 7, borderRadius: 5, backgroundColor: C.accent }, targetNote: { marginTop: 10, backgroundColor: '#FBF7F1', borderColor: '#D8C4AD' }, targetDisclaimer: { fontSize: 10, marginTop: 5 }, nutritionCoachLink: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 13, padding: 6 }, mealTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 17, marginTop: 14, marginBottom: 1 }, foodCard: { paddingVertical: 10, marginBottom: 4 }, foodRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, removeFood: { color: C.muted, fontSize: 24, paddingHorizontal: 5 }, insightCard: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 13 }, insightMark: { color: C.accent, fontSize: 16 }, mealSuggestions: { marginTop: 3, marginBottom: 6 }, suggestionChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 7 }, suggestionChip: { maxWidth: '48%', borderWidth: 1, borderColor: C.line, borderRadius: 13, backgroundColor: C.surface, paddingHorizontal: 10, paddingVertical: 7 }, suggestionChipTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, suggestionChipMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 9, marginTop: 2 }, foodFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, foodField: { width: '48%', flexGrow: 1 }, foodLabel: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, marginBottom: 5 }, fieldUnit: { color: C.muted, fontFamily: 'InterRegular' }, formError: { color: '#A04435', marginTop: 8 },
+  homeNutritionCard: { marginBottom: 0, borderColor: '#D8C4AD', backgroundColor: '#FBF7F1', padding: 14 }, homeCaloriesLine: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, homeCaloriesValueLine: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', gap: 5 }, homeCalories: { color: C.ink, fontFamily: 'BricolageExtraBold', fontSize: 27, lineHeight: 32 }, homeCaloriesTarget: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 12 }, homeNutritionCaption: { color: C.muted, fontFamily: 'InterBold', fontSize: 10, marginBottom: 1 }, homeNutritionPercent: { color: C.accent, fontFamily: 'InterBold', fontSize: 12 }, homeCalorieTrack: { height: 7, borderRadius: 5, backgroundColor: '#E5D9C9', overflow: 'hidden', marginTop: 9 }, homeCalorieFill: { height: 7, borderRadius: 5, backgroundColor: C.accent }, homeMacroList: { borderTopWidth: 1, borderTopColor: '#E5D9C9', marginTop: 10, paddingTop: 5 }, homeMacro: { minHeight: 24, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }, homeMacroLabel: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10 }, homeMacroValue: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11, textAlign: 'right' }, homeProgressRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.wash, borderRadius: 14, paddingHorizontal: 17, paddingVertical: 13 }, homeProgressMetric: { flex: 1 }, homeProgressValue: { color: C.ink, fontFamily: 'BricolageExtraBold', fontSize: 26 }, homeProgressLabel: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 11, marginTop: 1 }, homeMetricDivider: { width: 1, height: 38, backgroundColor: '#D8CFC1', marginHorizontal: 15 }, homeRecentCard: { paddingVertical: 14, marginBottom: 0 }, homeRecentTop: { flexDirection: 'row', alignItems: 'center', gap: 10 }, homeRecentTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14, marginBottom: 4 }, homeRecentMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 11 }, nutritionHistoryCalories: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, nutritionHistoryEmpty: { marginTop: 6, marginBottom: 10 },
+  nutritionScreen: { width: '100%', maxWidth: 1000, alignSelf: 'center' }, nutritionSummary: { flexDirection: 'row', alignItems: 'stretch', gap: 10 }, nutritionSummaryNarrow: { flexDirection: 'column' }, nutritionSummaryChildNarrow: { flex: undefined, width: '100%' }, calorieCard: { flex: 1.15, minWidth: 0, marginTop: 0, marginBottom: 0, backgroundColor: C.surface, paddingVertical: 13 }, nutritionMacroPanel: { flex: 1, minWidth: 0, justifyContent: 'center', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 8 }, nutritionMacroRow: { paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }, nutritionMacroRowLast: { borderBottomWidth: 0 }, nutritionMacroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }, nutritionMacroName: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, nutritionMacroTotal: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, textAlign: 'right' }, nutritionMacroTrack: { height: 5, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden', marginTop: 6 }, nutritionMacroFill: { height: 5, borderRadius: 4 }, nutritionMacroStatus: { fontFamily: 'InterSemiBold', fontSize: 9, marginTop: 4 }, nutritionMealGroup: { marginTop: 5, marginBottom: 3 }, nutritionMealHeading: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: C.line, marginBottom: 7 }, nutritionMealTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 19 }, nutritionMealAdd: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 8 }, nutritionMealAddText: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12 }, foodCard: { paddingVertical: 10, marginBottom: 6, borderRadius: 12 }, macroCard: { flexGrow: 1, width: '48%', minWidth: '47%', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 15, padding: 11 }, macroHead: { gap: 4 }, macroTotal: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, macroTrack: { height: 6, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden', marginTop: 8 }, macroFill: { height: 6, borderRadius: 4 }, macroRemaining: { fontFamily: 'InterSemiBold', fontSize: 10, marginTop: 7 }, calorieHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, calorieValue: { color: C.ink, fontFamily: 'BricolageExtraBold', fontSize: 25, marginTop: 2 }, calorieTarget: { color: C.muted, fontFamily: 'InterRegular', fontSize: 13 }, calorieGlyph: { fontSize: 30, color: C.accent }, calorieTrack: { height: 7, borderRadius: 5, backgroundColor: C.line, overflow: 'hidden', marginTop: 9 }, calorieFill: { height: 7, borderRadius: 5, backgroundColor: C.accent }, targetNote: { marginTop: 10, backgroundColor: '#FBF7F1', borderColor: '#D8C4AD' }, targetDisclaimer: { fontSize: 10, marginTop: 5 }, nutritionCoachLink: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 13, padding: 6 }, foodRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, removeFood: { color: C.muted, fontSize: 24, paddingHorizontal: 5 }, insightCard: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 13 }, insightMark: { color: C.accent, fontSize: 16 }, mealSuggestions: { marginTop: 3, marginBottom: 3 }, suggestionChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 5 }, suggestionChip: { maxWidth: '48%', borderWidth: 1, borderColor: C.line, borderRadius: 13, backgroundColor: C.surface, paddingHorizontal: 10, paddingVertical: 7 }, suggestionChipTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, suggestionChipMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 9, marginTop: 2 }, foodFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, foodField: { width: '48%', flexGrow: 1 }, foodLabel: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, marginBottom: 5 }, fieldUnit: { color: C.muted, fontFamily: 'InterRegular' }, formError: { color: '#A04435', marginTop: 8 },
   coachRoot: { flex: 1, backgroundColor: C.background }, coachContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 7 }, coachIntroRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }, coachClear: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12, padding: 7 }, chatScroll: { flex: 1, minHeight: 150 }, chatMessages: { paddingVertical: 8, gap: 9, flexGrow: 1, justifyContent: 'flex-end' }, chatBubble: { maxWidth: '88%', paddingHorizontal: 13, paddingVertical: 11, borderRadius: 17 }, assistantBubble: { alignSelf: 'flex-start', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderBottomLeftRadius: 5 }, userBubble: { alignSelf: 'flex-end', backgroundColor: C.ink, borderBottomRightRadius: 5 }, chatText: { color: C.ink, fontFamily: 'InterRegular', fontSize: 13, lineHeight: 19 }, userChatText: { color: '#FFF' }, typingBubble: { flexDirection: 'row', alignItems: 'center', gap: 8 }, chatTyping: { color: C.muted, fontSize: 11 }, promptRow: { gap: 7, paddingVertical: 8 }, promptChip: { borderRadius: 18, backgroundColor: C.wash, paddingHorizontal: 11, paddingVertical: 8 }, promptText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, borderWidth: 1, borderColor: C.line, borderRadius: 17, backgroundColor: C.surface, padding: 7 }, chatInput: { flex: 1, minHeight: 40, maxHeight: 100, paddingHorizontal: 9, paddingTop: 9, paddingBottom: 8, color: C.ink, fontFamily: 'InterRegular', fontSize: 13 }, sendButton: { width: 38, height: 38, borderRadius: 13, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, sendButtonText: { color: '#FFF', fontSize: 23, lineHeight: 25 }, localNote: { textAlign: 'center', fontSize: 9, marginTop: 5 },
 });

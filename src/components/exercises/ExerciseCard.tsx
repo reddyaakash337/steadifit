@@ -2,13 +2,16 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Exercise } from '@/data/catalog';
 import { SteadiifitColors as C } from '@/constants/theme';
+import { exerciseVisualForId } from '@/features/exerciseVisuals';
+import { ExerciseVisual } from '@/components/exercises/ExerciseVisual';
 
 export function ExerciseCard({ exercise, favorite, onFavorite, onPress, selectLabel }: {
   exercise: Exercise; favorite: boolean; onFavorite: () => void; onPress: () => void; selectLabel?: string;
 }) {
+  const hasVisual = Boolean(exerciseVisualForId(exercise.id));
   return <View style={styles.card}>
     <Pressable accessibilityRole="button" accessibilityLabel={`${selectLabel ? `${selectLabel} ` : 'View '}${exercise.name}`} onPress={onPress} style={styles.body}>
-      <View style={styles.demo}><Text style={styles.demoMark}>↗</Text><Text numberOfLines={1} style={styles.demoLabel}>{exercise.demo}</Text></View>
+      <View style={styles.demo}>{hasVisual ? <ExerciseVisual exerciseId={exercise.id} style={styles.demoImage} /> : <><Text style={styles.demoMark}>↗</Text><Text numberOfLines={1} style={styles.demoLabel}>{exercise.demo}</Text></>}</View>
       <View style={styles.content}>
         <View style={styles.titleRow}><Text numberOfLines={2} style={styles.name}>{exercise.name}</Text><View style={styles.level}><Text style={styles.levelText}>{exercise.difficulty}</Text></View></View>
         <Text style={styles.meta}>{exercise.primaryMuscles.join(', ')} · {exercise.equipment}</Text>
@@ -25,7 +28,7 @@ export function ExerciseCard({ exercise, favorite, onFavorite, onPress, selectLa
 const styles = StyleSheet.create({
   card: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 18, padding: 10, marginBottom: 10, position: 'relative' },
   body: { flexDirection: 'row', alignItems: 'center', minHeight: 96 },
-  demo: { width: 86, height: 86, borderRadius: 13, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', padding: 8 },
+  demo: { width: 86, height: 86, borderRadius: 13, backgroundColor: C.wash, alignItems: 'center', justifyContent: 'center', padding: 8 }, demoImage: { width: '100%', height: '100%' },
   demoMark: { color: C.accent, fontSize: 25, fontWeight: '700', marginBottom: 5 }, demoLabel: { color: C.accent, fontSize: 8, fontFamily: 'InterBold', letterSpacing: 0.4 },
   content: { flex: 1, paddingLeft: 12, paddingRight: 28 }, titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   name: { flex: 1, color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14, lineHeight: 19 }, level: { backgroundColor: '#F0EEE7', paddingHorizontal: 7, paddingVertical: 4, borderRadius: 10 }, levelText: { color: C.muted, fontSize: 9, fontFamily: 'InterSemiBold' },
