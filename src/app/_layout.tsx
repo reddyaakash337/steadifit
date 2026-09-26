@@ -32,11 +32,11 @@ function RootNavigator() {
         <Stack.Screen name="progress/body-weight" />
         <Stack.Screen name="exercises/index" />
         <Stack.Screen name="exercises/[id]" />
-        <Stack.Screen name="nutrition" />
         <Stack.Screen name="nutrition/add" />
         <Stack.Screen name="coach" />
         <Stack.Screen name="settings" />
         <Stack.Screen name="profile/edit" />
+        <Stack.Screen name="profile/personal-information" />
         <Stack.Screen name="about" />
       </Stack.Protected>
       <Stack.Screen name="auth" />

@@ -73,7 +73,7 @@ export type WorkoutHistoryItem = {
 
 export type BodyWeightEntry = { id: string; recordedAt: number; weight: number; units: WeightUnit };
 export type FoodMeal = 'Breakfast' | 'Lunch' | 'Dinner' | 'Snack';
-export type NutritionEntry = { id: string; date: string; meal: FoodMeal; name: string; calories: number; protein: number; carbs: number; fat: number };
+export type NutritionEntry = { id: string; date: string; meal: FoodMeal; name: string; calories: number; protein: number; carbs: number; fat: number; quantity?: number; servingUnit?: string };
 export type CoachConversation = { id: string; messages: CoachMessage[] };
 export type CoachMessage = { id: string; role: 'user' | 'assistant'; text: string; timestamp: number };
 

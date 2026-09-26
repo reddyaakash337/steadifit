@@ -12,9 +12,12 @@ import { createId } from '@/utils/ids';
 import { InMemorySteadiifitRepository } from '@/data/repositories/inMemory';
 import type { SteadiifitRepository } from '@/data/repositories/types';
 import { profileRepository } from '@/data/repositories/profile';
+import type { ProfilePersonalDetails } from '@/data/repositories/profile';
 import { settingsRepository } from '@/data/repositories/settings';
 import { planRepository } from '@/data/repositories/plan';
 import { workoutRepository } from '@/data/repositories/workout';
+import { bodyweightRepository } from '@/data/repositories/bodyweight';
+import { nutritionRepository } from '@/data/repositories/nutrition';
 import { useAuth } from '@/state/AuthContext';
 
 export type { BodyWeightEntry, CoachMessage, FoodMeal, Goal, WorkoutHistoryItem, WorkoutSettings, WorkoutSet } from '@/types/domain';
@@ -41,9 +44,14 @@ const createPlanPreferences = (profile: Profile): PlanPreferences => ({
   duration: profile.duration, focus: profile.trainingFocus,
 });
 
-type Onboarding = Pick<SteadiifitState, 'name' | 'goal' | 'experience' | 'equipment' | 'frequency'>;
+type Onboarding = Pick<SteadiifitState, 'name' | 'goal' | 'experience' | 'equipment' | 'frequency'> & {
+  dateOfBirth: string; heightCm: number; currentWeight: number; units: WeightUnit;
+};
 type ContextValue = {
-  state: SteadiifitState; profileLoaded: boolean; onboardingCompleted: boolean; finishOnboarding: (value: Onboarding) => void; saveProfile: (profile: Profile) => void; setUnits: (units: 'kg' | 'lb') => void; toggleFavorite: (exerciseId: string) => void;
+  state: SteadiifitState; profileLoaded: boolean; onboardingCompleted: boolean;
+  personalInformation: { dateOfBirth: string | null; heightCm: number | null };
+  savePersonalInformation: (value: { name: string; dateOfBirth: string | null; heightCm: number | null; units: WeightUnit; weight: number | null }) => void;
+  finishOnboarding: (value: Onboarding) => void; saveProfile: (profile: Profile) => void; setUnits: (units: 'kg' | 'lb') => void; toggleFavorite: (exerciseId: string) => void;
   startWorkout: (workoutId: string) => void; updateSet: (weight: number, reps: number) => void; completeSet: () => void;
   startSingleExercise: (exerciseId: string) => void;
   setRest: (seconds: number | null, active?: boolean) => void; advanceWorkout: () => void; skipExercise: () => void;
@@ -51,7 +59,7 @@ type ContextValue = {
   tickWorkout: () => void; finishWorkout: () => WorkoutHistoryItem | null; discardWorkout: () => void; logBodyWeight: (weight: number) => void;
   regeneratePlan: (preferences: PlanPreferences, name?: string) => void; startPlanWorkout: (dayIndex: number) => string | null;
   replacePlanExercise: (dayIndex: number, exerciseIndex: number, exerciseId: string) => void; addPlanExercise: (dayIndex: number, exerciseId: string) => void; removePlanExercise: (dayIndex: number, exerciseIndex: number) => boolean;
-  addFood: (entry: Omit<FoodEntry, 'id' | 'date'>) => void; removeFood: (id: string) => void; appendCoachMessage: (message: Omit<CoachMessage, 'id' | 'timestamp'>) => void; clearCoachMessages: () => void;
+  addFood: (entry: Omit<FoodEntry, 'id' | 'date'>) => void; updateFood: (entry: FoodEntry) => void; removeFood: (id: string) => void; appendCoachMessage: (message: Omit<CoachMessage, 'id' | 'timestamp'>) => void; clearCoachMessages: () => void;
   updateName: (name: string) => void; updateWorkoutSettings: (settings: Partial<WorkoutSettings>) => void;
   clearWorkoutHistory: () => void; clearNutritionData: () => void; resetPlan: () => void; resetAppData: () => void;
 };
@@ -77,6 +85,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   const state = useSyncExternalStore(repository.subscribe, repository.getSnapshot, repository.getSnapshot);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
+  const [personalInformation, setPersonalInformation] = useState<{ dateOfBirth: string | null; heightCm: number | null }>({ dateOfBirth: null, heightCm: null });
   const initialProfileRef = useRef(repository.getProfile());
   const profileInitializationRef = useRef<Promise<void> | null>(null);
   const initialSettingsRef = useRef(repository.getSettings());
@@ -86,6 +95,13 @@ export function AppProvider({ children }: PropsWithChildren) {
   const planWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const workoutInitializationRef = useRef<Promise<void> | null>(null);
   const workoutWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const bodyweightInitializationRef = useRef<Promise<void> | null>(null);
+  const bodyweightWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const nutritionInitializationRef = useRef<Promise<void> | null>(null);
+  const nutritionWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const nutritionLoadedUserIdRef = useRef<string | null>(null);
+  const nutritionRemovedBeforeLoadRef = useRef(new Set<string>());
+  const nutritionClearedBeforeLoadRef = useRef(false);
 
   useEffect(() => {
     if (authStatus !== 'authenticated' || !user) {
@@ -108,6 +124,7 @@ export function AppProvider({ children }: PropsWithChildren) {
           repository.updateProfile(result.data.profile);
         }
         if (active) setOnboardingCompleted(result.data.onboardingCompleted);
+        if (active) setPersonalInformation({ dateOfBirth: result.data.dateOfBirth, heightCm: result.data.heightCm });
       } finally {
         if (active) setProfileLoaded(true);
       }
@@ -131,6 +148,53 @@ export function AppProvider({ children }: PropsWithChildren) {
       if (localActiveSession) repository.createWorkoutSession(localActiveSession);
       else if (result.data.activeSession) repository.createWorkoutSession(result.data.activeSession);
     })();
+  }, [authStatus, repository, user]);
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !user) return;
+    bodyweightInitializationRef.current = (async () => {
+      const result = await bodyweightRepository.listCurrentEntries();
+      if (result.error || !result.data) {
+        if (result.error) console.error('Could not load bodyweight entries from Supabase; keeping local entries for this session.', result.error);
+        return;
+      }
+      const existingIds = new Set(repository.getBodyweightEntries().map(entry => entry.id));
+      for (const entry of result.data.slice().reverse()) {
+        if (!existingIds.has(entry.id)) repository.addBodyweightEntry(entry);
+      }
+    })();
+  }, [authStatus, repository, user]);
+
+  useEffect(() => {
+    if (authStatus !== 'authenticated' || !user) return;
+    let active = true;
+    if (nutritionLoadedUserIdRef.current && nutritionLoadedUserIdRef.current !== user.id) repository.clearNutritionEntries();
+    nutritionLoadedUserIdRef.current = null;
+    nutritionRemovedBeforeLoadRef.current.clear();
+    nutritionClearedBeforeLoadRef.current = false;
+    nutritionInitializationRef.current = (async () => {
+      try {
+        const result = await nutritionRepository.listCurrentEntries(user.id);
+        if (!active) return;
+        if (result.error || !result.data) {
+          if (result.error) console.error('Could not load nutrition entries from Supabase; keeping local entries for this session.', result.error);
+          return;
+        }
+        const existingIds = new Set(repository.getSnapshot().foodEntries.map(entry => entry.id));
+        for (const entry of result.data.slice().reverse()) {
+          if (!nutritionClearedBeforeLoadRef.current && !nutritionRemovedBeforeLoadRef.current.has(entry.id) && !existingIds.has(entry.id)) {
+            repository.addNutritionEntry(entry);
+          }
+        }
+      } finally {
+        if (active) {
+          nutritionLoadedUserIdRef.current = user.id;
+          nutritionRemovedBeforeLoadRef.current.clear();
+          nutritionClearedBeforeLoadRef.current = false;
+        }
+      }
+    })();
+    return () => { active = false; };
   }, [authStatus, repository, user]);
 
   useEffect(() => {
@@ -164,11 +228,11 @@ export function AppProvider({ children }: PropsWithChildren) {
     })();
   }, [authStatus, repository, user]);
 
-  const saveProfile = (profile: Profile) => {
+  const saveProfile = (profile: Profile, personalDetails?: ProfilePersonalDetails) => {
     repository.updateProfile(profile);
     void (async () => {
       await profileInitializationRef.current;
-      const result = await profileRepository.updateCurrentProfile(profile);
+      const result = await profileRepository.updateCurrentProfile(profile, personalDetails);
       if (result.error) console.error('Could not save profile to Supabase; keeping the local profile for this session.', result.error);
     })();
   };
@@ -225,10 +289,78 @@ export function AppProvider({ children }: PropsWithChildren) {
     return { error: result.error };
   });
 
+  const persistBodyweightEntry = (entry: BodyWeightEntry) => {
+    const save = async () => {
+      await bodyweightInitializationRef.current;
+      const result = await bodyweightRepository.addCurrentEntry(entry);
+      if (result.error) console.error('Could not save the bodyweight entry to Supabase; keeping it locally for this session.', result.error);
+    };
+    bodyweightWriteQueueRef.current = bodyweightWriteQueueRef.current.then(save, save);
+  };
+
+  const clearPersistedBodyweightEntries = () => {
+    const clear = async () => {
+      await bodyweightInitializationRef.current;
+      const result = await bodyweightRepository.deleteAllCurrentEntries();
+      if (result.error) console.error('Could not clear bodyweight entries in Supabase; keeping local reset behavior for this session.', result.error);
+    };
+    bodyweightWriteQueueRef.current = bodyweightWriteQueueRef.current.then(clear, clear);
+  };
+
+  const persistNutritionEntry = (entry: NutritionEntry) => {
+    const save = async () => {
+      await nutritionInitializationRef.current;
+      const ownerId = user?.id;
+      if (!ownerId) return;
+      const result = await nutritionRepository.addCurrentEntry(entry, ownerId);
+      if (result.error) console.error('Could not save the nutrition entry to Supabase; keeping it locally for this session.', result.error);
+    };
+    nutritionWriteQueueRef.current = nutritionWriteQueueRef.current.then(save, save);
+  };
+
+  const persistNutritionRemoval = (id: string) => {
+    if (nutritionLoadedUserIdRef.current !== user?.id) nutritionRemovedBeforeLoadRef.current.add(id);
+    const remove = async () => {
+      await nutritionInitializationRef.current;
+      const ownerId = user?.id;
+      if (!ownerId) return;
+      const result = await nutritionRepository.removeCurrentEntry(id, ownerId);
+      if (result.error) console.error('Could not remove the nutrition entry from Supabase; keeping the local change for this session.', result.error);
+    };
+    nutritionWriteQueueRef.current = nutritionWriteQueueRef.current.then(remove, remove);
+  };
+
+  const persistNutritionUpdate = (entry: NutritionEntry) => {
+    const update = async () => {
+      await nutritionInitializationRef.current;
+      const ownerId = user?.id;
+      if (!ownerId) return;
+      const result = await nutritionRepository.updateCurrentEntry(entry, ownerId);
+      if (result.error) console.error('Could not update the nutrition entry in Supabase; keeping the local change for this session.', result.error);
+    };
+    nutritionWriteQueueRef.current = nutritionWriteQueueRef.current.then(update, update);
+  };
+
+  const clearPersistedNutritionEntries = () => {
+    if (nutritionLoadedUserIdRef.current !== user?.id) nutritionClearedBeforeLoadRef.current = true;
+    const clear = async () => {
+      await nutritionInitializationRef.current;
+      const ownerId = user?.id;
+      if (!ownerId) return;
+      const result = await nutritionRepository.clearCurrentEntries(ownerId);
+      if (result.error) console.error('Could not clear nutrition entries in Supabase; keeping the local change for this session.', result.error);
+    };
+    nutritionWriteQueueRef.current = nutritionWriteQueueRef.current.then(clear, clear);
+  };
+
   const finishOnboarding = (value: Onboarding) => {
-    const profile = { ...repository.getProfile(), ...value };
+    const { dateOfBirth, heightCm, currentWeight, units, ...profileValues } = value;
+    const profile = { ...repository.getProfile(), ...profileValues };
     setOnboardingCompleted(true);
-    saveProfile(profile);
+    setPersonalInformation({ dateOfBirth, heightCm });
+    setUnits(units);
+    saveProfile(profile, { dateOfBirth, heightCm });
+    logBodyWeight(currentWeight);
     updatePlan(createPlan(createPlanPreferences(profile)));
   };
   const setUnits = (units: WeightUnit) => saveSettings({ ...repository.getSettings(), units });
@@ -345,8 +477,18 @@ export function AppProvider({ children }: PropsWithChildren) {
   const logBodyWeight = (weight: number) => {
     if (!Number.isFinite(weight) || weight <= 0) return;
     const current = repository.getSnapshot();
-    const entry: BodyWeightEntry = { id: createId(), recordedAt: Date.now(), weight, units: current.units };
+    const entry: BodyWeightEntry = { id: createId(), recordedAt: Date.now(), weight: Number(convertWeight(weight, current.units, 'kg').toFixed(2)), units: 'kg' };
     repository.addBodyweightEntry(entry);
+    persistBodyweightEntry(entry);
+  };
+
+  const savePersonalInformation = (value: { name: string; dateOfBirth: string | null; heightCm: number | null; units: WeightUnit; weight: number | null }) => {
+    const currentProfile = repository.getProfile();
+    const nextProfile = { ...currentProfile, name: value.name.trim().slice(0, 40) || currentProfile.name };
+    setPersonalInformation({ dateOfBirth: value.dateOfBirth, heightCm: value.heightCm });
+    setUnits(value.units);
+    saveProfile(nextProfile, { dateOfBirth: value.dateOfBirth, heightCm: value.heightCm });
+    if (value.weight !== null) logBodyWeight(value.weight);
   };
 
   const regeneratePlan = (preferences: PlanPreferences, name?: string) => {
@@ -382,9 +524,18 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   const addFood = (entry: Omit<FoodEntry, 'id' | 'date'>) => {
     const now = new Date(); const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    repository.addNutritionEntry({ ...entry, id: createId(), date });
+    const nutritionEntry = { ...entry, id: createId(), date };
+    repository.addNutritionEntry(nutritionEntry);
+    persistNutritionEntry(nutritionEntry);
   };
-  const removeFood = (id: string) => repository.removeNutritionEntry(id);
+  const removeFood = (id: string) => {
+    repository.removeNutritionEntry(id);
+    persistNutritionRemoval(id);
+  };
+  const updateFood = (entry: FoodEntry) => {
+    repository.updateNutritionEntry(entry);
+    persistNutritionUpdate(entry);
+  };
   const appendCoachMessage = (message: Omit<CoachMessage, 'id' | 'timestamp'>) => repository.appendCoachMessage({ ...message, id: createId(), timestamp: Date.now() });
   const clearCoachMessages = () => repository.clearCoachConversation(createId());
   const updateName = (name: string) => saveProfile({ ...repository.getProfile(), name: name.trim().slice(0, 40) || repository.getProfile().name });
@@ -393,7 +544,10 @@ export function AppProvider({ children }: PropsWithChildren) {
     repository.clearWorkoutHistory();
     clearPersistedWorkoutHistory();
   };
-  const clearNutritionData = () => repository.clearNutritionEntries();
+  const clearNutritionData = () => {
+    repository.clearNutritionEntries();
+    clearPersistedNutritionEntries();
+  };
   const resetPlan = () => updatePlan(createPlan(createPlanPreferences(repository.getProfile())));
   const resetAppData = () => {
     const fresh = createInitialState();
@@ -403,12 +557,14 @@ export function AppProvider({ children }: PropsWithChildren) {
     persistPlan(repository.getActivePlan());
     if (activeWorkoutId) deletePersistedWorkout(activeWorkoutId);
     clearPersistedWorkoutHistory();
+    clearPersistedBodyweightEntries();
+    clearPersistedNutritionEntries();
   };
 
-  const value = useMemo(() => ({ state, profileLoaded, onboardingCompleted, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
+  const value = useMemo(() => ({ state, profileLoaded, onboardingCompleted, personalInformation, savePersonalInformation, finishOnboarding, saveProfile, setUnits, toggleFavorite, startWorkout, startPlanWorkout: startPlanWorkoutAction, startSingleExercise,
     updateSet, completeSet, setRest, advanceWorkout, skipExercise, replaceExercise, addExercise, replacePlanExercise, addPlanExercise, removePlanExercise,
-    togglePause, tickWorkout, finishWorkout, discardWorkout, logBodyWeight, regeneratePlan, addFood, removeFood, appendCoachMessage, clearCoachMessages,
-    updateName, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData }), [state, profileLoaded, onboardingCompleted]);
+    togglePause, tickWorkout, finishWorkout, discardWorkout, logBodyWeight, regeneratePlan, addFood, updateFood, removeFood, appendCoachMessage, clearCoachMessages,
+    updateName, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData }), [state, profileLoaded, onboardingCompleted, personalInformation]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 

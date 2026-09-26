@@ -7,12 +7,15 @@ import { useSteadiifit, Goal, FoodMeal } from '@/state/AppContext';
 import { useAuth } from '@/state/AuthContext';
 import { SteadiifitColors as C } from '@/constants/theme';
 import { Action, Card, Copy, Empty, Eyebrow, Heading, Option, Pill, Screen, SectionTitle, TopBar, uiStyles } from '@/components/steadiifit-ui';
+import { PrimaryHeader } from '@/components/PrimaryHeader';
 import { ExerciseCard } from '@/components/exercises/ExerciseCard';
 import { bodyWeightChange, calculateExerciseProgress, calculatePersonalRecords, calculateTotalVolume, calculateTotalWorkouts, calculateWeeklyWorkoutCount, calculateWorkoutStreak, calculateWorkoutStats, sortWorkoutsNewest, sortedBodyWeight, startOfWeek, workoutTimestamp } from '@/features/progress';
 import { currentPlanWeek, equipmentCompatible, planDayFocus, planDayName, planDayStatus, planDayDuration, planWeekProgress, plannedExercises, PlanPreferences, TrainingFocus } from '@/features/plan';
-import { estimateNutritionTargets, nutritionTotals } from '@/features/nutrition';
+import { localDateKey, nutritionTotals, recentFoods } from '@/features/nutrition';
+import { calculateNutritionTargets, formatTarget, NutritionTargetValue, targetMidpoint } from '@/features/nutritionTargets';
 import { deriveCoachContext, localCoachResponse } from '@/features/coach';
 import { convertWeight, formatWeight, WeightUnit } from '@/features/units';
+import type { NutritionEntry } from '@/types/domain';
 
 const weekday = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 const pushWorkout = (id?: string) => router.push({ pathname: '/workout/[id]', params: { id: id || 'push' } });
@@ -46,37 +49,64 @@ const questions: { title: string; key: 'goal' | 'experience' | 'equipment' | 'fr
   { title: 'How often can you train?', key: 'frequency', choices: ['2 days', '3 days', '4 days', '5 days', '6 days'] },
 ];
 
+function isValidDateOfBirth(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return false;
+  const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day && date <= today;
+}
+
 export function OnboardingScreen() {
   const [step, setStep] = useState(0);
   const [name, setName] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [height, setHeight] = useState('');
+  const [currentWeight, setCurrentWeight] = useState('');
+  const [units, setUnits] = useState<WeightUnit>('kg');
   const [goal, setGoal] = useState<Goal | ''>('');
   const [experience, setExperience] = useState('');
   const [equipment, setEquipment] = useState('');
   const [frequency, setFrequency] = useState<number | null>(null);
-  const { finishOnboarding } = useSteadiifit();
-  const question = questions[step];
-  const value = question.key === 'goal' ? goal : question.key === 'experience' ? experience : question.key === 'equipment' ? equipment : frequency;
-  const selected = (choice: string) => question.key === 'frequency' ? value === Number(choice.split(' ')[0]) : value === choice;
+  const { finishOnboarding, state } = useSteadiifit();
+  const question = step > 0 ? questions[step - 1] : null;
+  const value = question?.key === 'goal' ? goal : question?.key === 'experience' ? experience : question?.key === 'equipment' ? equipment : question?.key === 'frequency' ? frequency : null;
+  const heightValue = Number(height.replace(',', '.'));
+  const weightValue = Number(currentWeight.replace(',', '.'));
+  const heightCm = units === 'lb' ? heightValue * 2.54 : heightValue;
+  const weightKg = units === 'lb' ? weightValue / 2.2046226218 : weightValue;
+  const aboutValid = isValidDateOfBirth(dateOfBirth) && Number.isFinite(heightCm) && heightCm >= 50 && heightCm <= 280 && Number.isFinite(weightKg) && weightKg > 0 && weightKg <= 500;
+  const canContinue = step === 0 ? aboutValid : value !== '' && value !== null;
+  const selected = (choice: string) => question?.key === 'frequency' ? value === Number(choice.split(' ')[0]) : value === choice;
   const choose = (choice: string) => {
-    if (question.key === 'goal') setGoal(choice as Goal);
-    if (question.key === 'experience') setExperience(choice);
-    if (question.key === 'equipment') setEquipment(choice);
-    if (question.key === 'frequency') setFrequency(Number(choice.split(' ')[0]));
+    if (question?.key === 'goal') setGoal(choice as Goal);
+    if (question?.key === 'experience') setExperience(choice);
+    if (question?.key === 'equipment') setEquipment(choice);
+    if (question?.key === 'frequency') setFrequency(Number(choice.split(' ')[0]));
   };
   const next = () => {
-    if (value === '' || value === null) return;
-    if (step < questions.length - 1) { setStep(step + 1); return; }
-    finishOnboarding({ name: name.trim() || 'Alex', goal: goal || 'Build muscle', experience, equipment, frequency: frequency || 4 });
+    if (!canContinue) return;
+    if (step < questions.length) { setStep(step + 1); return; }
+    finishOnboarding({ name: name.trim() || state.name || 'Alex', goal: goal || 'Build muscle', experience, equipment, frequency: frequency || 4,
+      dateOfBirth: dateOfBirth.trim(), heightCm, currentWeight: weightValue, units });
     router.replace('/plan-generated');
   };
   return <Screen>
-    <TopBar title={`Getting started · ${step + 1} of 4`} onBack={() => step > 0 ? setStep(step - 1) : router.back()} />
-    <View style={s.progressTrack}><View style={[s.progressFill, { width: `${((step + 1) / 4) * 100}%` }]} /></View>
-    <Heading>{question.title}</Heading><Copy style={{ marginBottom: 18 }}>We’ll use this to shape a plan that fits your routine.</Copy>
-    {step === 0 ? <><Eyebrow>YOUR NAME (OPTIONAL)</Eyebrow><TextInput value={name} onChangeText={setName} placeholder="What should we call you?" placeholderTextColor={C.muted} style={uiStyles.input} /></> : null}
-    {question.choices.map(choice => <Option key={choice} title={choice} selected={selected(choice)} onPress={() => choose(choice)} />)}
+    <TopBar title={`Getting started · ${step + 1} of 5`} onBack={() => step > 0 ? setStep(step - 1) : router.back()} />
+    <View style={s.progressTrack}><View style={[s.progressFill, { width: `${((step + 1) / 5) * 100}%` }]} /></View>
+    <Heading>{question?.title ?? 'About You'}</Heading><Copy style={{ marginBottom: 18 }}>We’ll use this to shape a plan that fits your routine.</Copy>
+    {step === 0 ? <>
+      <Eyebrow>YOUR NAME (OPTIONAL)</Eyebrow><TextInput value={name} onChangeText={setName} placeholder="What should we call you?" placeholderTextColor={C.muted} style={uiStyles.input} />
+      <Eyebrow>DATE OF BIRTH</Eyebrow><TextInput value={dateOfBirth} onChangeText={setDateOfBirth} placeholder="YYYY-MM-DD" placeholderTextColor={C.muted} keyboardType="numbers-and-punctuation" style={uiStyles.input} />
+      <Eyebrow>{units === 'kg' ? 'HEIGHT (CM)' : 'HEIGHT (IN)'}</Eyebrow><TextInput value={height} onChangeText={setHeight} placeholder={units === 'kg' ? 'e.g. 170' : 'e.g. 67'} placeholderTextColor={C.muted} keyboardType="decimal-pad" style={uiStyles.input} />
+      <Eyebrow>{units === 'kg' ? 'CURRENT WEIGHT (KG)' : 'CURRENT WEIGHT (LB)'}</Eyebrow><TextInput value={currentWeight} onChangeText={setCurrentWeight} placeholder={units === 'kg' ? 'e.g. 70' : 'e.g. 154'} placeholderTextColor={C.muted} keyboardType="decimal-pad" style={uiStyles.input} />
+      <Eyebrow>UNIT SYSTEM</Eyebrow><View style={{ marginTop: 10 }}><Option title="Metric · kg / cm" selected={units === 'kg'} onPress={() => setUnits('kg')} /><Option title="Imperial · lb / in" selected={units === 'lb'} onPress={() => setUnits('lb')} /></View>
+      {!canContinue ? <Copy style={{ marginBottom: 10 }}>Enter a valid past date, height, and weight to continue.</Copy> : null}
+    </> : null}
+    {question?.choices.map(choice => <Option key={choice} title={choice} selected={selected(choice)} onPress={() => choose(choice)} />)}
     <View style={{ flex: 1, minHeight: 16 }} />
-    <Action title={step < 3 ? 'Continue' : 'Generate my plan'} disabled={value === '' || value === null} onPress={next} />
+    <Action title={step < 4 ? 'Continue' : 'Generate my plan'} disabled={!canContinue} onPress={next} />
   </Screen>;
 }
 
@@ -85,26 +115,27 @@ export function PlanGeneratedScreen() {
   return <View style={s.loading}><ActivityIndicator color={C.accent} size="large" /><Heading size={24}>Building your plan…</Heading><Copy>{`Your first week is coming together.`}</Copy></View>;
 }
 
-function BrandHeader() {
-  const { state } = useSteadiifit();
-  return <View style={s.brandHeader}><Text style={s.brand}>Steadiifit</Text><Pressable onPress={() => router.push('/(tabs)/profile')} style={s.avatar}><Text style={s.avatarLabel}>{(state.name || 'A')[0].toUpperCase()}</Text></Pressable></View>;
-}
 function Stat({ value, label }: { value: string; label: string }) { return <View style={s.stat}><Text style={s.statValue}>{value}</Text><Text style={s.statLabel}>{label}</Text></View>; }
 
 export function HomeScreen() {
-  const { state, startPlanWorkout } = useSteadiifit();
+  const { state, personalInformation, startPlanWorkout } = useSteadiifit();
+  const nutrition = nutritionTotals(state.foodEntries);
+  const nutritionTargets = calculateNutritionTargets({ dateOfBirth: personalInformation.dateOfBirth, heightCm: personalInformation.heightCm,
+    bodyWeightEntries: state.bodyWeightEntries, goal: state.goal, trainingFrequency: state.frequency,
+    workoutDurationMinutes: state.duration, trainingFocus: state.trainingFocus }).targets;
   const today = (new Date().getDay() + 6) % 7;
   const isTrainingDay = Boolean(state.plan[today]?.workoutId);
   const planDay = recommendedPlanDay(state.plan); const workoutId = planDay?.workoutId ?? recommendedWorkoutId(state.plan);
-  const workout = workoutById(workoutId); const recent = state.history[0]; const workoutName = planDay ? planDayName(planDay) : workout.name; const duration = planDay ? planDayDuration(planDay) : workout.duration;
+  const workout = workoutById(workoutId); const workoutName = planDay ? planDayName(planDay) : workout.name; const duration = planDay ? planDayDuration(planDay) : workout.duration;
   return <Screen>
-    <BrandHeader /><Eyebrow>YOUR TRAINING, AT A GLANCE</Eyebrow><Heading size={24}>Good to see you, {state.name}.</Heading>
-    <Card style={s.hero}><Eyebrow>{isTrainingDay ? 'TODAY’S WORKOUT' : 'NEXT UP IN YOUR PLAN'}</Eyebrow><Text style={s.heroTitle}>{workoutName}</Text><Text style={s.heroMeta}>{planDay ? planDayFocus(planDay) : workout.focus} · {duration} min · {planDay ? plannedExercises(planDay).length : workout.exerciseIds.length} exercises</Text><Action title="View workout  ›" onPress={() => planDay ? router.push({ pathname: '/plan/day/[day]', params: { day: String(planDay.day) } }) : pushWorkout(workout.id)} /><Pressable accessibilityRole="button" accessibilityLabel={state.activeWorkout ? 'Continue active workout' : 'Start workout now'} onPress={() => { if (state.activeWorkout) router.push({ pathname: '/active/[id]', params: { id: state.activeWorkout.workoutId } }); else if (planDay) { const id = startPlanWorkout(planDay.day); if (id) router.push({ pathname: '/active/[id]', params: { id } }); } else pushWorkout(workout.id); }} style={s.heroStart}><Text style={s.heroStartText}>{state.activeWorkout ? 'Continue active workout  →' : 'Start workout now  →'}</Text></Pressable></Card>
-    <SectionTitle title="Your week" action="My Plan" onPress={() => router.push('/(tabs)/plan')} /><Card onPress={() => router.push('/(tabs)/plan')}><Text style={s.cardTitle}>{state.frequency} training days, planned for you</Text><Copy>{state.goal} · Tap to view your full week.</Copy></Card>
-    <SectionTitle title="Progress" action="View" onPress={() => router.push('/(tabs)/progress')} /><View style={s.statsRow}><Stat value={`${calculateWorkoutStreak(state.history)} days`} label="Current streak" /><Stat value={`${calculateTotalWorkouts(state.history)}`} label="Workouts" /><Stat value={`${state.history[0] ? Math.round(calculateWorkoutStats(state.history[0], state.units).volume).toLocaleString() : '0'} ${state.units}`} label="Last volume" /></View>
-    <SectionTitle title="Recent workout" action="History" onPress={() => router.push('/history')} />
-    {recent ? <Card onPress={() => openHistoryItem(recent.id)}><Text style={s.cardTitle}>{recent.name}</Text><Copy>{recent.date} · {recent.duration} min · {Math.round(calculateWorkoutStats(recent, state.units).volume).toLocaleString()} {state.units}</Copy></Card> : <Empty title="No workouts yet" detail="Complete your first workout to start building your history." />}
-    <SectionTitle title="Nutrition snapshot" action="Open" onPress={() => router.push('/nutrition')} /><Card onPress={() => router.push('/nutrition')}><Text style={s.cardTitle}>Today's nutrition</Text><Copy>{nutritionTotals(state.foodEntries).calories.toLocaleString()} kcal logged · {displayNumber(nutritionTotals(state.foodEntries).protein)}g protein</Copy></Card>
+    <PrimaryHeader title="Home" /><Eyebrow>YOUR TRAINING, AT A GLANCE</Eyebrow><Heading size={24}>Good to see you, {state.name}.</Heading>
+    <Card style={s.hero}><Eyebrow>{isTrainingDay ? 'TODAY’S WORKOUT' : 'NEXT UP IN YOUR PLAN'}</Eyebrow><Text style={s.heroTitle}>{workoutName}</Text><Text style={s.heroMeta}>{planDay ? planDayFocus(planDay) : workout.focus} · {duration} min · {planDay ? plannedExercises(planDay).length : workout.exerciseIds.length} exercises</Text><Pressable accessibilityRole="button" accessibilityLabel={state.activeWorkout ? 'Continue active workout' : 'Start workout now'} onPress={() => { if (state.activeWorkout) router.push({ pathname: '/active/[id]', params: { id: state.activeWorkout.workoutId } }); else if (planDay) { const id = startPlanWorkout(planDay.day); if (id) router.push({ pathname: '/active/[id]', params: { id } }); } else pushWorkout(workout.id); }} style={s.heroStart}><Text style={s.heroStartText}>{state.activeWorkout ? 'Continue active workout  →' : 'Start workout now  →'}</Text></Pressable></Card>
+    <SectionTitle title="Nutrition today" />
+    <Card onPress={() => router.push('/(tabs)/nutrition')} style={s.homeNutritionCard}>
+      <View style={s.homeNutritionLine}><Text style={s.cardTitle}>Calories</Text><Text style={s.homeNutritionValue}>{nutrition.calories.toLocaleString()} / {nutritionTargets ? formatTarget(nutritionTargets.calories) : '—'} kcal</Text></View>
+      <View style={s.homeNutritionLine}><Text style={s.cardTitle}>Protein</Text><Text style={s.homeNutritionValue}>{displayNumber(nutrition.protein)} / {nutritionTargets ? `${formatTarget(nutritionTargets.protein)} g` : '—'}</Text></View>
+    </Card>
+    <Copy style={s.homeStreak}>Current streak · {calculateWorkoutStreak(state.history)} days</Copy>
   </Screen>;
 }
 
@@ -116,7 +147,6 @@ export function PlanScreen() {
     <Card style={s.planSummary}><View style={s.planSummaryTop}><View style={{ flex: 1 }}><Text style={s.cardTitle}>{state.goal}</Text><Copy>{state.frequency} training days · {durationPreference} · {state.trainingFocus}</Copy></View><Pill>WEEK {currentPlanWeek(state.planStartedAt)}</Pill></View><View style={s.planMeter}><View style={[s.planMeterFill, { width: `${Math.round(progress.ratio * 100)}%` }]} /></View><Copy style={{ marginTop: 8 }}>{progress.completed} / {progress.planned} workouts completed this week</Copy></Card>
     <SectionTitle title="This week" action="Customize" onPress={() => router.push('/plan/customize')} />
     {state.plan.slice().sort((a, b) => a.weekday - b.weekday).map(day => { const status = planDayStatus(day, state.history); const rest = !day.workoutId; const title = planDayName(day); const exerciseCount = plannedExercises(day).length; return <Card key={day.id} style={{ ...s.planDayCard, ...(day.weekday === today && !rest ? s.planDayToday : {}) }} onPress={() => router.push({ pathname: '/plan/day/[day]', params: { day: String(day.weekday) } })}><Text style={s.day}>{weekday[day.weekday]}</Text><View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{title}</Text><Copy>{rest ? 'Rest and recover' : `${planDayFocus(day)} · ${planDayDuration(day)} min · ${exerciseCount} exercises`}</Copy></View><View style={s.planDayRight}><Pill green={status === 'Completed'}>{status.toUpperCase()}</Pill><Text style={s.chevron}>›</Text></View></Card>; })}
-    <Action title="Browse all workouts" secondary onPress={() => router.push('/(tabs)/workouts')} />
   </Screen>;
 }
 
@@ -141,7 +171,7 @@ export function PlanDayDetailScreen({ dayIndex }: { dayIndex: number }) {
   const status = planDayStatus(day, state.history); const items = plannedExercises(day); const rest = !day.workoutId; const durationPreference = state.duration === 75 ? '75+ min target' : `${state.duration} min target`;
   const start = () => { const workoutId = startPlanWorkout(dayIndex); if (state.activeWorkout) router.push({ pathname: '/active/[id]', params: { id: state.activeWorkout.workoutId } }); else if (workoutId) router.push({ pathname: '/active/[id]', params: { id: workoutId } }); };
   return <Screen><TopBar title={weekday[dayIndex] ? `${weekday[dayIndex][0]}${weekday[dayIndex].slice(1).toLowerCase()} plan` : 'Planned workout'} /><Eyebrow>{rest ? 'RECOVERY DAY' : `WEEK ${currentPlanWeek(state.planStartedAt)} · ${status.toUpperCase()}`}</Eyebrow><Heading>{planDayName(day)}</Heading><Copy>{rest ? 'Rest is part of the plan. Take the day to recover before your next training session.' : `${planDayFocus(day)} · ${planDayDuration(day)} min · ${items.length} exercises`}</Copy>
-    {rest ? <><Card style={{ marginTop: 14 }}><Text style={s.cardTitle}>Rest and recover</Text><Copy>Your next planned training day is already on your weekly schedule.</Copy></Card><Action title="View progress" secondary onPress={() => router.push('/(tabs)/progress')} /><Action title="Browse exercise library" secondary onPress={() => router.push('/exercises')} /></> : <>
+    {rest ? <><Card style={{ marginTop: 14 }}><Text style={s.cardTitle}>Rest and recover</Text><Copy>Your next planned training day is already on your weekly schedule.</Copy></Card></> : <>
       <View style={s.pills}><Pill>{state.goal}</Pill><Pill>{state.equipment}</Pill><Pill>{durationPreference}</Pill></View>
       <SectionTitle title="Workout exercises" action="Add exercise" onPress={() => router.push({ pathname: '/exercises', params: { mode: 'add', planDay: String(dayIndex) } })} />
       {items.length ? items.map((planned, index) => { const exercise = exerciseById(planned.exerciseId); return <Card key={planned.id}><Text style={s.cardTitle}>{index + 1}. {exercise.name}</Text><Copy>{exercise.primaryMuscles.join(', ')} · {exercise.equipment}</Copy><Text style={s.prescription}>{planned.sets} × {planned.repRange} · Rest {planned.restSeconds}s</Text><View style={s.planExerciseActions}><Pressable accessibilityRole="button" onPress={() => router.push({ pathname: '/exercises', params: { mode: 'replace', planDay: String(dayIndex), exerciseIndex: String(index) } })}><Text style={s.planExerciseLink}>Replace</Text></Pressable><Pressable accessibilityRole="button" disabled={items.length <= 1} onPress={() => removePlanExercise(dayIndex, index)}><Text style={[s.planExerciseLink, items.length <= 1 && { opacity: 0.4 }]}>Remove</Text></Pressable></View>{items.length <= 1 ? <Copy style={{ marginTop: 5, fontSize: 11 }}>Keep at least one exercise in the workout.</Copy> : null}</Card>; }) : <Empty title="No compatible exercises" detail="Adjust your equipment or focus in Customize Plan, or add a movement from the library." />}
@@ -149,6 +179,25 @@ export function PlanDayDetailScreen({ dayIndex }: { dayIndex: number }) {
       <SectionTitle title="Workout status" /><Card><Copy>{status === 'Completed' ? 'This planned workout is completed.' : status === 'Skipped' ? 'This day has passed without a matching completed workout.' : status === 'Today' ? 'Scheduled for today.' : 'Scheduled for later this week.'}</Copy></Card>
       <Action title={state.activeWorkout ? 'Continue active workout' : 'Start Workout'} onPress={start} disabled={!items.length} />
     </>}
+  </Screen>;
+}
+
+export function TrainScreen() {
+  return <Screen>
+    <PrimaryHeader title="Train" /><Copy>Plan your week, choose a workout, or find an exercise.</Copy>
+    <SectionTitle title="Choose a destination" />
+    <Card onPress={() => router.push('/(tabs)/plan')} style={{ marginBottom: 10 }}>
+      <View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>My Plan</Text><Text style={s.chevron}>›</Text></View>
+      <Copy>Review your weekly schedule and customize planned sessions.</Copy>
+    </Card>
+    <Card onPress={() => router.push('/(tabs)/workouts')} style={{ marginBottom: 10 }}>
+      <View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>Workouts</Text><Text style={s.chevron}>›</Text></View>
+      <Copy>Browse workout templates and start a session.</Copy>
+    </Card>
+    <Card onPress={() => router.push('/exercises')}>
+      <View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>Exercise Library</Text><Text style={s.chevron}>›</Text></View>
+      <Copy>Search exercises and review movement details.</Copy>
+    </Card>
   </Screen>;
 }
 
@@ -160,10 +209,9 @@ export function WorkoutsScreen() {
   const filtered = useMemo(() => workouts.filter(workout => workout.name.toLowerCase().includes(search.toLowerCase()) && (category === 'All' || (category === 'Full Body' ? workout.id === 'full' : workout.id !== 'full'))), [search, category]);
   return <Screen><Heading>Workouts</Heading><Copy>Find a session that fits your plan.</Copy>
     <SectionTitle title="Today's recommendation" /><Card style={s.recommend} onPress={() => pushWorkout(featured.id)}><Pill>RECOMMENDED</Pill><Text style={[s.cardTitle, { marginTop: 9 }]}>{featured.name}</Text><Copy>{featured.duration} min · {featured.focus}</Copy></Card>
-    <SectionTitle title="Workout library" action="History" onPress={() => router.push('/history')} /><TextInput value={search} onChangeText={setSearch} placeholder="Search workouts" placeholderTextColor={C.muted} style={uiStyles.input} />
+    <SectionTitle title="Workout library" /><TextInput value={search} onChangeText={setSearch} placeholder="Search workouts" placeholderTextColor={C.muted} style={uiStyles.input} />
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>{categories.map(item => <Pressable key={item} onPress={() => setCategory(item)} style={[s.chip, category === item && s.chipActive]}><Text style={[s.chipText, category === item && s.chipTextActive]}>{item}</Text></Pressable>)}</ScrollView>
     {filtered.length ? filtered.map(workout => <Card key={workout.id} onPress={() => pushWorkout(workout.id)}><Text style={s.cardTitle}>{workout.name}</Text><View style={s.pills}><Pill>{workout.difficulty}</Pill><Pill>{workout.duration} min</Pill></View><Copy style={{ marginTop: 8 }}>{workout.description}</Copy></Card>) : <Empty title="No workouts found" detail="Try changing your search or category." />}
-    <Action title="Exercise library" secondary onPress={() => router.push('/exercises')} />
   </Screen>;
 }
 
@@ -348,10 +396,13 @@ export function ExerciseDetailsScreen({ id }: { id: string }) {
 
 export function ProgressScreen() {
   const { state } = useSteadiifit(); const now = new Date(); const weekly = calculateWeeklyWorkoutCount(state.history, now); const records = calculatePersonalRecords(state.history, now, state.units);
+  const todayKey = localDateKey(now);
+  const nutritionHistory = [...new Set(state.foodEntries.map(entry => entry.date))].filter(date => date < todayKey).sort((a, b) => b.localeCompare(a)).slice(0, 3);
+  const nutritionDateLabel = (value: string) => { const [year, month, day] = value.split('-').map(Number); return new Date(year, month - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: year !== now.getFullYear() ? 'numeric' : undefined }); };
   const days = Array.from({ length: 7 }, (_, index) => { const date = startOfWeek(now); date.setDate(date.getDate() + index); const key = date.toDateString(); const done = state.history.some(item => new Date(workoutTimestamp(item, now)).toDateString() === key); return { date, done }; });
   const exercisesWithHistory = [...new Set(state.history.flatMap(item => item.exercises.filter(ex => ex.sets.some(set => set.completed !== false)).map(ex => ex.exerciseId)))];
   const recent = sortWorkoutsNewest(state.history, now).slice(0, 3); const weightEntries = sortedBodyWeight(state.bodyWeightEntries); const currentWeight = weightEntries[0]; const change = bodyWeightChange(state.bodyWeightEntries);
-  return <Screen><Heading>Progress</Heading><Copy>Your training, at a glance.</Copy>
+  return <Screen><PrimaryHeader title="Progress" /><Copy>Your training, at a glance.</Copy>
     {!state.history.length ? <Empty title="Your progress starts here" detail="Complete a workout and your stats, consistency, and strength history will appear here." /> : <>
       <View style={s.progressGrid}><ProgressStat label="Current streak" value={`${calculateWorkoutStreak(state.history, now)} days`} /><ProgressStat label="This week" value={`${weekly} workouts`} /><ProgressStat label="Workouts" value={`${calculateTotalWorkouts(state.history)}`} /><ProgressStat label="Training volume" value={`${Math.round(calculateTotalVolume(state.history, state.units)).toLocaleString()} ${state.units}`} /></View>
       <SectionTitle title="Weekly consistency" /><Card><View style={s.weekDays}>{days.map(({ date, done }) => <View key={date.toISOString()} style={s.weekDay}><View style={[s.weekDot, done && s.weekDotDone]}><Text style={[s.weekCheck, done && { color: '#FFF' }]}>{done ? '✓' : ''}</Text></View><Text style={s.weekLabel}>{date.toLocaleDateString('en-US', { weekday: 'short' })}</Text></View>)}</View><Copy style={{ marginTop: 11 }}>{weekly} {weekly === 1 ? 'workout' : 'workouts'} completed this week</Copy></Card>
@@ -359,8 +410,8 @@ export function ProgressScreen() {
       <SectionTitle title="Strength progress" />{exercisesWithHistory.length ? exercisesWithHistory.map(id => { const exercise = exerciseById(id); const progress = calculateExerciseProgress(state.history, id, now, state.units); if (!progress) return null; return <Card key={id} onPress={() => router.push({ pathname: '/progress/exercise/[id]', params: { id } })}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{exercise.name}</Text><Text style={s.linkArrow}>›</Text></View><Copy>Best · {progress.bestWeight > 0 ? `${progress.bestWeight.toFixed(1).replace(/\.0$/, '')} ${state.units}` : 'Bodyweight'} × {progress.bestReps} reps</Copy><Copy style={{ marginTop: 4 }}>{progress.sessions} sessions · {Math.round(progress.totalVolume).toLocaleString()} {state.units} volume · Last {formatDate(progress.lastPerformed)}</Copy></Card>; }) : <Empty title="No performance data yet" detail="Logged exercise performances will be tracked here." />}
       <SectionTitle title="Personal records" />{records.length ? records.map(record => <Card key={record.exerciseId}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{exerciseById(record.exerciseId).name}</Text><Pill green>BEST</Pill></View><Copy>{formatWeight(record.weight, state.units, state.units)} {state.units} × {record.reps} reps · {formatDate(record.date)}</Copy></Card>) : <Empty title="No records yet" detail="Complete a weighted set to establish your first personal record." />}
     </>}
-    <SectionTitle title="Body weight" action="View" onPress={() => router.push('/progress/body-weight')} /><Card onPress={() => router.push('/progress/body-weight')}><Text style={s.cardTitle}>{currentWeight ? `${formatWeight(currentWeight.weight, currentWeight.units, state.units)} ${state.units}` : 'No weight entries yet'}</Text><Copy>{currentWeight ? change === null ? 'Current body weight · log another entry to see a change' : `${change > 0 ? '+' : ''}${formatWeight(change, currentWeight.units, state.units)} ${state.units} since previous entry` : 'Log a body weight to start your personal trend.'}</Copy></Card>
-    <Action title="Workout history" secondary onPress={() => router.push('/history')} />
+    <SectionTitle title="Body weight" /><Card onPress={() => router.push('/progress/body-weight')}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{currentWeight ? `${formatWeight(currentWeight.weight, currentWeight.units, state.units)} ${state.units}` : 'No weight entries yet'}</Text><Text style={s.chevron}>›</Text></View><Copy>{currentWeight ? change === null ? 'Current body weight · log another entry to see a change' : `${change > 0 ? '+' : ''}${formatWeight(change, currentWeight.units, state.units)} ${state.units} since previous entry` : 'Log a body weight to start your personal trend.'}</Copy></Card>
+    <SectionTitle title="Nutrition history" />{nutritionHistory.length ? nutritionHistory.map(date => { const totals = nutritionTotals(state.foodEntries, date); return <Card key={date}><View style={s.historyCardTop}><Text style={[s.cardTitle, { flex: 1 }]}>{nutritionDateLabel(date)}</Text><Text style={s.nutritionHistoryCalories}>{totals.calories.toLocaleString()} kcal</Text></View><Copy>{totals.meals} {totals.meals === 1 ? 'food entry' : 'food entries'} · Protein {displayNumber(totals.protein)} g · Carbs {displayNumber(totals.carbs)} g · Fat {displayNumber(totals.fat)} g</Copy></Card>; }) : <Copy style={s.nutritionHistoryEmpty}>Past daily totals will appear here after you log food on another day.</Copy>}
   </Screen>;
 }
 
@@ -385,42 +436,112 @@ const meals: FoodMeal[] = ['Breakfast', 'Lunch', 'Dinner', 'Snack'];
 const numberValue = (value: string) => Number(value.trim().replace(',', '.'));
 const displayNumber = (value: number) => Number.isInteger(value) ? value.toLocaleString() : value.toFixed(1).replace(/\.0$/, '');
 
+type NutritionStatus = 'normal' | 'approaching' | 'atTarget' | 'aboveTarget' | 'wellAbove';
+function nutritionStatus(value: number, target: NutritionTargetValue | undefined): NutritionStatus {
+  if (!target || targetMidpoint(target) <= 0) return 'normal';
+  const ratio = value / targetMidpoint(target);
+  if (ratio < 0.8) return 'normal';
+  if (ratio < 0.95) return 'approaching';
+  if (ratio <= 1.05) return 'atTarget';
+  if (ratio <= 1.2) return 'aboveTarget';
+  return 'wellAbove';
+}
+
+const nutritionStatusStyle = (status: NutritionStatus) => {
+  if (status === 'approaching') return { borderColor: '#D9C6A8', backgroundColor: '#FBF7F1', fill: '#B78A53', text: '#8A653A' };
+  if (status === 'atTarget') return { borderColor: '#BFD5C3', backgroundColor: '#F2F7F2', fill: C.green, text: '#477252' };
+  if (status === 'aboveTarget') return { borderColor: '#D9C6A8', backgroundColor: '#FBF7F1', fill: '#B78A53', text: '#8A653A' };
+  if (status === 'wellAbove') return { borderColor: '#D7B7B2', backgroundColor: '#FBF2F1', fill: '#B65B50', text: '#A04435' };
+  return { borderColor: C.line, backgroundColor: C.surface, fill: C.accent, text: C.muted };
+};
+
+function nutritionStatusLabel(status: NutritionStatus): string {
+  if (status === 'approaching') return 'Approaching target';
+  if (status === 'atTarget') return 'At target';
+  if (status === 'aboveTarget' || status === 'wellAbove') return 'Above target';
+  return 'Normal';
+}
+
 export function NutritionScreen() {
-  const { state, removeFood } = useSteadiifit();
+  const { state, personalInformation, removeFood } = useSteadiifit();
+  const [entryToDelete, setEntryToDelete] = useState<NutritionEntry | null>(null);
   const entries = state.foodEntries.filter(item => { const now = new Date(); const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; return item.date === date; });
-  const totals = nutritionTotals(state.foodEntries); const targets = estimateNutritionTargets(state.bodyWeightEntries, state.goal, state.frequency);
-  const macro = (label: string, value: number, target: number | undefined, tint: string) => <View key={label} style={s.macroCard}><View style={s.macroHead}><Text style={s.cardTitle}>{label}</Text><Text style={s.macroTotal}>{displayNumber(value)}g{target ? ` / ${target}g` : ''}</Text></View><View style={s.macroTrack}><View style={[s.macroFill, { backgroundColor: tint, width: `${target ? Math.min(100, Math.round(value / target * 100)) : value ? 100 : 0}%` }]} /></View><Copy style={s.macroRemaining}>{target ? value >= target ? 'Target reached' : `${displayNumber(target - value)}g remaining` : 'Target unavailable'}</Copy></View>;
-  const insights = !entries.length ? ['You haven’t logged any food today.'] : [targets ? totals.protein >= targets.protein ? 'Protein target completed.' : `You're ${displayNumber(targets.protein - totals.protein)}g away from your protein target.` : 'Add body weight in Progress to see rough estimated targets.', `You've logged ${totals.meals} ${totals.meals === 1 ? 'food item' : 'food items'} today.`];
-  return <Screen><TopBar title="Nutrition" right={<Pressable accessibilityRole="button" onPress={() => router.push('/coach')}><Text style={s.nutritionCoachLink}>Coach</Text></Pressable>} /><Eyebrow>TODAY · ESTIMATED TARGETS</Eyebrow><Heading>Nutrition</Heading>
-    {!entries.length ? <Empty title="Start tracking your nutrition" detail="Log your meals to see calories and macros here." /> : null}
-    <Card style={s.calorieCard}><View style={s.calorieHeading}><View><Eyebrow>CALORIES CONSUMED</Eyebrow><Text style={s.calorieValue}>{totals.calories.toLocaleString()}<Text style={s.calorieTarget}>{targets ? ` / ${targets.calories.toLocaleString()} kcal` : ' kcal'}</Text></Text></View><Text style={s.calorieGlyph}>◒</Text></View><View style={s.calorieTrack}><View style={[s.calorieFill, { width: `${targets ? Math.min(100, totals.calories / targets.calories * 100) : 0}%` }]} /></View><Copy style={{ marginTop: 9 }}>{targets ? `${Math.max(0, targets.calories - totals.calories).toLocaleString()} kcal to estimated daily target` : 'Add body weight to get a rough estimated daily target.'}</Copy></Card>
-    <View style={s.macroGrid}>{macro('Protein', totals.protein, targets?.protein, C.accent)}{macro('Carbs', totals.carbs, targets?.carbs, C.green)}{macro('Fat', totals.fat, targets?.fat, '#9A8061')}</View>
-    {!targets ? <Card style={s.targetNote}><Text style={s.cardTitle}>Set up an estimate</Text><Copy>Targets use your latest body-weight entry, goal, and training frequency. They’re rough estimates, not medical advice.</Copy><Action title="Add body weight" secondary onPress={() => router.push('/progress/body-weight')} /></Card> : <Copy style={s.targetDisclaimer}>Rough estimate based on body weight, goal, and training frequency — not a medical recommendation.</Copy>}
-    <SectionTitle title="Today's meals" action="Log food" onPress={() => router.push('/nutrition/add')} />
-    {meals.map(meal => { const mealEntries = entries.filter(entry => entry.meal === meal); if (!mealEntries.length) return null; return <View key={meal}><Text style={s.mealTitle}>{meal}</Text>{mealEntries.map(entry => <Card key={entry.id} style={s.foodCard}><View style={s.foodRow}><View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{entry.name}</Text><Copy>{entry.calories} kcal · P {displayNumber(entry.protein)}g · C {displayNumber(entry.carbs)}g · F {displayNumber(entry.fat)}g</Copy></View><Pressable accessibilityRole="button" accessibilityLabel={`Remove ${entry.name}`} onPress={() => removeFood(entry.id)} hitSlop={10}><Text style={s.removeFood}>×</Text></Pressable></View></Card>)}</View>; })}
-    {entries.length ? <Action title="Log food" secondary onPress={() => router.push('/nutrition/add')} /> : <Action title="Log Food" onPress={() => router.push('/nutrition/add')} />}
+  const totals = nutritionTotals(state.foodEntries);
+  const estimate = calculateNutritionTargets({ dateOfBirth: personalInformation.dateOfBirth, heightCm: personalInformation.heightCm,
+    bodyWeightEntries: state.bodyWeightEntries, goal: state.goal, trainingFrequency: state.frequency,
+    workoutDurationMinutes: state.duration, trainingFocus: state.trainingFocus });
+  const targets = estimate.targets;
+  const macro = (label: string, value: number, target: NutritionTargetValue | undefined) => {
+    const midpoint = target ? targetMidpoint(target) : 0; const status = nutritionStatus(value, target); const tone = nutritionStatusStyle(status);
+    return <View key={label} style={[s.macroCard, { borderColor: tone.borderColor, backgroundColor: tone.backgroundColor }]}><View style={s.macroHead}><Text style={s.cardTitle}>{label}</Text><Text style={s.macroTotal}>{displayNumber(value)} / {target ? formatTarget(target) : '—'} g</Text></View><View style={s.macroTrack}><View style={[s.macroFill, { backgroundColor: tone.fill, width: `${target && midpoint > 0 ? Math.min(100, Math.round(value / midpoint * 100)) : 0}%` }]} /></View><Text style={[s.macroRemaining, { color: tone.text }]}>{target ? nutritionStatusLabel(status) : 'Target unavailable'}</Text></View>;
+  };
+  const missingFields = estimate.missingInformation;
+  const missingMessage = missingFields.length === 1 ? `Add your ${missingFields[0]}` : `Add your ${missingFields.slice(0, -1).join(', ')} and ${missingFields[missingFields.length - 1]}`;
+  const insights = !entries.length ? ['You haven’t logged any food today.'] : [targets ? totals.protein >= targets.protein ? 'Protein target completed.' : `Protein is ${displayNumber(Math.max(0, targets.protein - totals.protein))}g below the target.` : `${missingMessage} in Personal Information to calculate nutrition targets.`, `You've logged ${totals.meals} ${totals.meals === 1 ? 'food item' : 'food items'} today.`];
+  const caloriesStatus = nutritionStatus(totals.calories, targets?.calories); const caloriesTone = nutritionStatusStyle(caloriesStatus);
+  const addMeal = (meal: FoodMeal) => router.push({ pathname: '/nutrition/add', params: { meal } });
+  return <Screen><PrimaryHeader title="Nutrition" /><Eyebrow>TODAY · ESTIMATED TARGETS</Eyebrow>
+    <Card style={{ ...s.calorieCard, borderColor: caloriesTone.borderColor, backgroundColor: caloriesTone.backgroundColor }}><View style={s.calorieHeading}><View><Eyebrow>CALORIES</Eyebrow><Text style={s.calorieValue}>{totals.calories.toLocaleString()}<Text style={s.calorieTarget}> / {targets ? formatTarget(targets.calories) : '—'} kcal</Text></Text></View><Text style={[s.calorieGlyph, { color: caloriesTone.fill }]}>◒</Text></View><View style={s.calorieTrack}><View style={[s.calorieFill, { backgroundColor: caloriesTone.fill, width: `${targets ? Math.min(100, Math.round(totals.calories / targetMidpoint(targets.calories) * 100)) : 0}%` }]} /></View><Copy style={{ marginTop: 8, color: caloriesTone.text }}>{targets ? nutritionStatusLabel(caloriesStatus) : 'Target unavailable'}</Copy></Card>
+    <View style={s.macroGrid}>{macro('Protein', totals.protein, targets?.protein)}{macro('Carbs', totals.carbs, targets?.carbohydrates)}{macro('Fat', totals.fat, targets?.fat)}</View>
+    {!targets ? <Card style={s.targetNote}><Text style={s.cardTitle}>Complete Personal Information for targets</Text><Copy>{missingMessage} in Personal Information to calculate your calorie and macro targets. No default targets are substituted.</Copy><Action title="Personal Information" secondary onPress={() => router.push('/profile/personal-information')} /></Card> : <Copy style={s.targetDisclaimer}>Estimated from your profile and training goal. Sex is not collected, so calorie targets show a range.</Copy>}
+    <SectionTitle title="Today's meals" />
+    {meals.map(meal => { const mealEntries = entries.filter(entry => entry.meal === meal); return <View key={meal}><SectionTitle title={meal} action={`+ Add ${meal}`} onPress={() => addMeal(meal)} />{mealEntries.map(entry => <Card key={entry.id} style={s.foodCard}><View style={s.foodRow}><View style={{ flex: 1, minWidth: 0 }}><Text style={s.cardTitle}>{entry.name}</Text><Copy>{entry.quantity !== undefined ? `${displayNumber(entry.quantity)} ${entry.servingUnit ?? 'servings'} · ` : entry.servingUnit ? `${entry.servingUnit} · ` : ''}{entry.calories} kcal · P {displayNumber(entry.protein)}g · C {displayNumber(entry.carbs)}g · F {displayNumber(entry.fat)}g · estimated</Copy></View><Pressable accessibilityRole="button" accessibilityLabel={`Edit ${entry.name}`} onPress={() => router.push({ pathname: '/nutrition/add', params: { entryId: entry.id } })} hitSlop={8}><Text style={s.nutritionCoachLink}>Edit</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel={`Delete ${entry.name}`} onPress={() => setEntryToDelete(entry)} hitSlop={10}><Text style={s.removeFood}>×</Text></Pressable></View></Card>)}</View>; })}
     <SectionTitle title="Nutrition insights" />{insights.map((insight, index) => <Card key={index} style={s.insightCard}><Text style={s.insightMark}>✦</Text><Copy style={{ flex: 1 }}>{insight}</Copy></Card>)}
+    <Modal visible={Boolean(entryToDelete)} transparent animationType="fade" onRequestClose={() => setEntryToDelete(null)}><View style={s.modalShade}><View style={s.confirmCard}><Eyebrow>PLEASE CONFIRM</Eyebrow><Heading size={22}>Delete food entry?</Heading><Copy>Remove {entryToDelete?.name} from your nutrition log?</Copy><Pressable accessibilityRole="button" onPress={() => { if (entryToDelete) removeFood(entryToDelete.id); setEntryToDelete(null); }} style={s.destructiveAction}><Text style={s.destructiveText}>Delete entry</Text></Pressable><Action title="Cancel" secondary onPress={() => setEntryToDelete(null)} /></View></View></Modal>
   </Screen>;
 }
 
 export function AddFoodScreen() {
-  const { addFood } = useSteadiifit();
-  const [name, setName] = useState(''); const [meal, setMeal] = useState<FoodMeal>('Breakfast');
+  const { state, addFood, updateFood } = useSteadiifit();
+  const params = useLocalSearchParams<{ entryId?: string | string[]; reuseId?: string | string[]; meal?: string | string[] }>();
+  const entryId = Array.isArray(params.entryId) ? params.entryId[0] : params.entryId;
+  const reuseId = Array.isArray(params.reuseId) ? params.reuseId[0] : params.reuseId;
+  const requestedMeal = Array.isArray(params.meal) ? params.meal[0] : params.meal;
+  const startingMeal = meals.find(item => item === requestedMeal) ?? 'Breakfast';
+  const sourceId = entryId || reuseId;
+  const sourceEntry = sourceId ? state.foodEntries.find(entry => entry.id === sourceId) : undefined;
+  const isEditing = Boolean(entryId && sourceEntry);
+  const [name, setName] = useState(''); const [meal, setMeal] = useState<FoodMeal>(startingMeal);
   const [fields, setFields] = useState({ calories: '', protein: '', carbs: '', fat: '' }); const [error, setError] = useState('');
+  const [quantity, setQuantity] = useState(''); const [servingUnit, setServingUnit] = useState('');
+  const [initializedSourceId, setInitializedSourceId] = useState('');
+  useEffect(() => {
+    if (!sourceEntry || !sourceId || initializedSourceId === sourceId) return;
+    setName(sourceEntry.name); setMeal(sourceEntry.meal);
+    setFields({ calories: String(sourceEntry.calories), protein: String(sourceEntry.protein), carbs: String(sourceEntry.carbs), fat: String(sourceEntry.fat) });
+    setQuantity(sourceEntry.quantity === undefined ? '' : String(sourceEntry.quantity)); setServingUnit(sourceEntry.servingUnit ?? '');
+    setInitializedSourceId(sourceId);
+  }, [sourceEntry, sourceId, initializedSourceId]);
   const update = (key: keyof typeof fields, value: string) => setFields(previous => ({ ...previous, [key]: value }));
   const save = () => {
     const values = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.trim() === '' ? 0 : numberValue(value)])) as Record<keyof typeof fields, number>;
     if (!name.trim()) { setError('Enter a food name to continue.'); return; }
     if (Object.values(values).some(value => !Number.isFinite(value) || value < 0)) { setError('Nutrition values must be valid non-negative numbers.'); return; }
     if (values.calories > 10000 || values.protein > 1000 || values.carbs > 1000 || values.fat > 1000) { setError('That value looks unusually high. Check the serving values and try again.'); return; }
-    addFood({ name: name.trim(), meal, ...values }); router.replace('/nutrition');
+    if (quantity.trim() && (!Number.isFinite(numberValue(quantity)) || numberValue(quantity) <= 0)) { setError('Quantity must be a positive number.'); return; }
+    const serving = { ...(quantity.trim() ? { quantity: numberValue(quantity) } : {}), ...(servingUnit.trim() ? { servingUnit: servingUnit.trim() } : {}) };
+    if (isEditing && sourceEntry) updateFood({ ...sourceEntry, name: name.trim(), meal, ...values,
+      quantity: quantity.trim() ? numberValue(quantity) : undefined,
+      servingUnit: servingUnit.trim() || undefined });
+    else addFood({ name: name.trim(), meal, ...values, ...serving });
+    router.replace('/nutrition');
   };
-  const valid = name.trim().length > 0 && Object.values(fields).every(value => value.trim() === '' || (Number.isFinite(numberValue(value)) && numberValue(value) >= 0 && !/[eE+-]/.test(value)));
+  const valid = name.trim().length > 0 && Object.values(fields).every(value => value.trim() === '' || (Number.isFinite(numberValue(value)) && numberValue(value) >= 0 && !/[eE+-]/.test(value))) && (!quantity.trim() || (Number.isFinite(numberValue(quantity)) && numberValue(quantity) > 0 && !/[eE+-]/.test(quantity)));
   const field = (label: string, key: keyof typeof fields, unit: string) => <View style={s.foodField}><Text style={s.foodLabel}>{label} <Text style={s.fieldUnit}>({unit})</Text></Text><TextInput accessibilityLabel={label} keyboardType="decimal-pad" value={fields[key]} onChangeText={value => update(key, value)} placeholder="0" placeholderTextColor={C.muted} style={uiStyles.input} maxLength={7} /></View>;
-  return <Screen><TopBar title="Add food" /><Eyebrow>FOOD LOG</Eyebrow><Heading>Add a meal</Heading><Copy>Enter the nutrition information for one serving.</Copy><SectionTitle title="Food name" /><TextInput accessibilityLabel="Food name" value={name} onChangeText={setName} placeholder="e.g. Greek yogurt" placeholderTextColor={C.muted} style={uiStyles.input} maxLength={60} />
-    <SectionTitle title="Nutrition" /><View style={s.foodFields}>{field('Calories', 'calories', 'kcal')}{field('Protein', 'protein', 'g')}{field('Carbs', 'carbs', 'g')}{field('Fat', 'fat', 'g')}</View>
+  const suggestions = recentFoods(state.foodEntries.filter(entry => entry.meal === meal), 4);
+  const chooseSuggestion = (entry: NutritionEntry) => {
+    setName(entry.name); setMeal(entry.meal);
+    setFields({ calories: String(entry.calories), protein: String(entry.protein), carbs: String(entry.carbs), fat: String(entry.fat) });
+    setQuantity(entry.quantity === undefined ? '' : String(entry.quantity)); setServingUnit(entry.servingUnit ?? ''); setError('');
+  };
+  return <Screen><TopBar title={isEditing ? 'Edit food' : 'Add food'} /><Eyebrow>FOOD LOG</Eyebrow><Heading>{isEditing ? 'Edit entry' : reuseId && sourceEntry ? 'Quick re-add' : 'Add a meal'}</Heading>
+    <Copy>{isEditing ? 'Update this entry in your nutrition log.' : reuseId && sourceEntry ? 'Confirm or adjust this saved food before adding it today.' : 'Nutrition values are estimates entered by you; Steadiifit does not analyze arbitrary dishes.'}</Copy>
+    <SectionTitle title="Food name" /><TextInput accessibilityLabel="Food name" value={name} onChangeText={setName} placeholder="e.g. Greek yogurt" placeholderTextColor={C.muted} style={uiStyles.input} maxLength={60} />
+    {!isEditing ? <View style={s.mealSuggestions}><Copy>{suggestions.length ? `Previously logged for ${meal}` : `No saved ${meal.toLowerCase()} foods yet`}</Copy><View style={s.suggestionChips}>{suggestions.map(({ entry }) => <Pressable key={entry.id} accessibilityRole="button" accessibilityLabel={`Use ${entry.name}, ${entry.calories} calories`} onPress={() => chooseSuggestion(entry)} style={s.suggestionChip}><Text numberOfLines={1} style={s.suggestionChipTitle}>{entry.name}</Text><Text style={s.suggestionChipMeta}>{entry.calories} kcal</Text></Pressable>)}</View></View> : null}
+    <SectionTitle title="Serving (optional)" /><View style={{ flexDirection: 'row', gap: 8 }}><TextInput accessibilityLabel="Quantity" value={quantity} onChangeText={setQuantity} placeholder="Quantity" placeholderTextColor={C.muted} keyboardType="decimal-pad" style={[uiStyles.input, { flex: 1 }]} maxLength={8} /><TextInput accessibilityLabel="Serving unit" value={servingUnit} onChangeText={setServingUnit} placeholder="g, scoop, plate" placeholderTextColor={C.muted} style={[uiStyles.input, { flex: 2 }]} maxLength={30} /></View>
+    <SectionTitle title="Estimated nutrition for this entry" /><View style={s.foodFields}>{field('Calories', 'calories', 'kcal')}{field('Protein', 'protein', 'g')}{field('Carbs', 'carbs', 'g')}{field('Fat', 'fat', 'g')}</View>
     <SectionTitle title="Meal" />{meals.map(item => <Option key={item} title={item} selected={meal === item} onPress={() => setMeal(item)} />)}
-    {error ? <Copy style={s.formError}>{error}</Copy> : null}<Action title="Save food" disabled={!valid} onPress={save} /><Action title="Cancel" secondary onPress={() => router.back()} />
+    {error ? <Copy style={s.formError}>{error}</Copy> : null}<Action title={isEditing ? 'Save changes' : 'Add food'} disabled={!valid} onPress={save} /><Action title="Cancel" secondary onPress={() => router.back()} />
   </Screen>;
 }
 
@@ -433,8 +554,7 @@ export function CoachScreen() {
   const submit = (value = input) => { const text = value.trim(); if (!text || typing) return; appendCoachMessage({ role: 'user', text }); setInput(''); setTyping(true); setPrompt(text); responseTimeout.current = setTimeout(() => { appendCoachMessage({ role: 'assistant', text: localCoachResponse(text, state, deriveCoachContext(state)) }); setTyping(false); }, 420); };
   const messages = state.coachMessages;
   return <KeyboardAvoidingView style={s.coachRoot} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={Platform.OS === 'ios' ? 12 : 0}>
-    <View style={s.coachContainer}><TopBar title="AI Coach" right={<Pressable accessibilityRole="button" accessibilityLabel="Clear conversation" onPress={() => { if (responseTimeout.current) clearTimeout(responseTimeout.current); setTyping(false); clearCoachMessages(); }}><Text style={s.coachClear}>Clear</Text></Pressable>} /><Eyebrow>YOUR PERSONAL FITNESS ASSISTANT</Eyebrow><Heading size={25}>AI Coach</Heading><Copy>Answers use your local workouts and tracking.</Copy>
-      <View style={s.coachShortcuts}><Pressable onPress={() => router.push('/nutrition')} style={s.coachShortcut}><Text style={s.coachShortcutText}>Nutrition</Text></Pressable><Pressable onPress={() => router.push('/(tabs)/plan')} style={s.coachShortcut}><Text style={s.coachShortcutText}>My Plan</Text></Pressable><Pressable onPress={() => router.push('/(tabs)/progress')} style={s.coachShortcut}><Text style={s.coachShortcutText}>Progress</Text></Pressable></View>
+      <View style={s.coachContainer}><PrimaryHeader title="AI Coach" /><View style={s.coachIntroRow}><View style={{ flex: 1 }}><Eyebrow>YOUR PERSONAL FITNESS ASSISTANT</Eyebrow><Copy>Answers use your local workouts and tracking.</Copy></View><Pressable accessibilityRole="button" accessibilityLabel="Clear conversation" onPress={() => { if (responseTimeout.current) clearTimeout(responseTimeout.current); setTyping(false); clearCoachMessages(); }}><Text style={s.coachClear}>Clear</Text></Pressable></View>
       <ScrollView ref={scrollRef} style={s.chatScroll} contentContainerStyle={s.chatMessages} keyboardShouldPersistTaps="handled" onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}>
         {!messages.length ? <View style={[s.chatBubble, s.assistantBubble]}><Text style={s.chatText}>{coachGreeting}</Text></View> : messages.map(message => <View key={message.id} style={[s.chatBubble, message.role === 'user' ? s.userBubble : s.assistantBubble]}><Text style={[s.chatText, message.role === 'user' && s.userChatText]}>{message.text}</Text></View>)}
         {typing ? <View accessibilityLabel={`Coach is responding to ${prompt}`} style={[s.chatBubble, s.assistantBubble, s.typingBubble]}><ActivityIndicator size="small" color={C.accent} /><Text style={s.chatTyping}>Thinking locally…</Text></View> : null}
@@ -463,17 +583,10 @@ export function ProfileScreen() {
       setSigningOut(false);
     }
   };
-  const latest = sortedBodyWeight(state.bodyWeightEntries)[0];
-  const bodyWeight = latest ? `${formatWeight(latest.weight, latest.units, state.units)} ${state.units}` : 'Not logged';
-  const summary = `${state.goal} · ${state.frequency} workouts/week`;
-  return <Screen><TopBar title="Profile" back={false} right={<Pressable accessibilityRole="button" accessibilityLabel="Edit profile" onPress={() => router.push('/profile/edit')} style={s.editProfileButton}><Text style={s.editProfileText}>Edit</Text></Pressable>} />
-    <Card style={s.profileHero}><View style={s.profileHeroRow}><View style={s.avatarBig}><Text style={s.avatarLabel}>{(state.name.trim().slice(0, 2) || 'A').toUpperCase()}</Text></View><View style={{ flex: 1, minWidth: 0 }}><Heading size={23} style={s.profileName} numberOfLines={1}>{state.name || 'Athlete'}</Heading><Copy numberOfLines={2}>{summary}</Copy></View></View><Text style={s.profileExperience}>{state.experience} · {state.equipment}</Text></Card>
-    <SectionTitle title="Your stats" /><View style={s.profileStats}><ProgressStat label="Workouts" value={`${calculateTotalWorkouts(state.history)}`} /><ProgressStat label="Current streak" value={`${calculateWorkoutStreak(state.history)} days`} /><ProgressStat label="Current plan" value={`${state.frequency} days / wk`} /><ProgressStat label="Body weight" value={bodyWeight} /></View>
-    <SectionTitle title="Training" /><Card onPress={() => router.push('/(tabs)/plan')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>My Plan</Text><Copy>{state.goal} · {state.trainingFocus}</Copy></View><Text style={s.chevron}>›</Text></Card>
-    <Card onPress={() => router.push('/(tabs)/progress')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Progress & history</Text><Copy>Workouts, strength, and body-weight tracking</Copy></View><Text style={s.chevron}>›</Text></Card>
-    <SectionTitle title="Nutrition" /><Card onPress={() => router.push('/nutrition')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Nutrition tracking</Text><Copy>Today’s meals and macro overview</Copy></View><Text style={s.chevron}>›</Text></Card>
-    <SectionTitle title="Preferences" /><Card onPress={() => router.push('/profile/edit')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Personalize your plan</Text><Copy>{state.frequency} days · {state.duration} min · {state.equipment}</Copy></View><Text style={s.chevron}>›</Text></Card>
-    <SectionTitle title="App" /><Card onPress={() => router.push('/settings')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Settings</Text><Copy>Units, workout behavior, and local data</Copy></View><Text style={s.chevron}>›</Text></Card><Action title="About Steadiifit" secondary onPress={() => router.push('/about')} />
+  return <Screen><PrimaryHeader title="Profile" />
+    <Card style={s.profileHero}><View style={s.profileHeroRow}><View style={s.avatarBig}><Text style={s.avatarLabel}>{(state.name.trim().slice(0, 2) || 'A').toUpperCase()}</Text></View><View style={{ flex: 1, minWidth: 0 }}><Heading size={23} style={s.profileName} numberOfLines={1}>{state.name || 'Athlete'}</Heading><Copy>Personal account</Copy></View></View></Card>
+    <Card onPress={() => router.push('/profile/personal-information')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Personal Information</Text><Copy>Name, date of birth, height, current weight, and units</Copy></View><Text style={s.chevron}>›</Text></Card>
+    <Card onPress={() => router.push('/settings')} style={s.profileLinkCard}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Settings</Text><Copy>Units, workout behavior, and local data</Copy></View><Text style={s.chevron}>›</Text></Card>
     <SectionTitle title="Account" /><Action title={signingOut ? 'Logging out…' : 'Log out'} secondary disabled={signingOut} onPress={() => void logOut()} />
     {signOutError ? <Copy>{signOutError}</Copy> : null}
   </Screen>;
@@ -500,38 +613,126 @@ export function EditProfileScreen() {
   </Screen>;
 }
 
+export function PersonalInformationScreen() {
+  const { state, personalInformation, profileLoaded, savePersonalInformation } = useSteadiifit();
+  const latestWeight = sortedBodyWeight(state.bodyWeightEntries)[0];
+  const [name, setName] = useState(state.name);
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [heightCmDraft, setHeightCmDraft] = useState('');
+  const [feet, setFeet] = useState('');
+  const [inches, setInches] = useState('');
+  const [units, setUnits] = useState<WeightUnit>(state.units);
+  const [newWeight, setNewWeight] = useState('');
+
+  useEffect(() => {
+    if (!profileLoaded) return;
+    setName(state.name);
+    setDateOfBirth(personalInformation.dateOfBirth ?? '');
+    const cm = personalInformation.heightCm;
+    setHeightCmDraft(cm === null ? '' : String(cm));
+    if (cm !== null) {
+      const totalInches = cm / 2.54;
+      const wholeFeet = Math.floor(totalInches / 12);
+      setFeet(String(wholeFeet));
+      setInches(String(Number((totalInches - wholeFeet * 12).toFixed(1))));
+    } else {
+      setFeet(''); setInches('');
+    }
+    setUnits(state.units);
+  }, [profileLoaded]);
+
+  const changeUnits = (next: WeightUnit) => {
+    if (next === units) return;
+    const amount = Number(newWeight.replace(',', '.'));
+    if (newWeight.trim() && Number.isFinite(amount)) setNewWeight(String(Number(convertWeight(amount, units, next).toFixed(1))));
+    if (next === 'lb') {
+      const cm = Number(heightCmDraft.replace(',', '.'));
+      if (heightCmDraft.trim() && Number.isFinite(cm)) {
+        const totalInches = cm / 2.54;
+        const wholeFeet = Math.floor(totalInches / 12);
+        setFeet(String(wholeFeet));
+        setInches(String(Number((totalInches - wholeFeet * 12).toFixed(1))));
+      }
+    } else {
+      const feetValue = Number(feet.replace(',', '.'));
+      const inchesValue = Number(inches.replace(',', '.'));
+      if ((feet.trim() || inches.trim()) && Number.isFinite(feetValue) && Number.isFinite(inchesValue)) {
+        setHeightCmDraft(String(Number(((feetValue * 12 + inchesValue) * 2.54).toFixed(1))));
+      }
+    }
+    setUnits(next);
+  };
+
+  const parsedDate = dateOfBirth.trim();
+  const dateValid = !parsedDate || isValidDateOfBirth(parsedDate);
+  const metricHeight = Number(heightCmDraft.replace(',', '.'));
+  const imperialHeight = (Number(feet.replace(',', '.')) * 12 + Number(inches.replace(',', '.'))) * 2.54;
+  const hasHeight = units === 'kg' ? heightCmDraft.trim().length > 0 : feet.trim().length > 0 || inches.trim().length > 0;
+  const heightCm = hasHeight ? (units === 'kg' ? metricHeight : imperialHeight) : null;
+  const heightValid = heightCm === null || (Number.isFinite(heightCm) && heightCm >= 50 && heightCm <= 280);
+  const parsedWeight = Number(newWeight.replace(',', '.'));
+  const weightValid = !newWeight.trim() || (Number.isFinite(parsedWeight) && parsedWeight > 0 && parsedWeight <= (units === 'kg' ? 500 : 1102));
+  const save = () => {
+    if (!dateValid || !heightValid || !weightValid) return;
+    savePersonalInformation({
+      name,
+      dateOfBirth: parsedDate || null,
+      heightCm: heightCm === null ? null : Number(heightCm.toFixed(1)),
+      units,
+      weight: newWeight.trim() ? parsedWeight : null,
+    });
+    router.back();
+  };
+
+  return <Screen>
+    <TopBar title="Personal Information" />
+    <Eyebrow>YOUR DETAILS</Eyebrow><Heading>Personal Information</Heading>
+    <SectionTitle title="Name" /><TextInput accessibilityLabel="Name" value={name} onChangeText={setName} maxLength={40} placeholder="Your name" placeholderTextColor={C.muted} style={uiStyles.input} />
+    <SectionTitle title="Date of birth" /><TextInput accessibilityLabel="Date of birth" value={dateOfBirth} onChangeText={setDateOfBirth} placeholder="YYYY-MM-DD" placeholderTextColor={C.muted} keyboardType="numbers-and-punctuation" style={uiStyles.input} />
+    {!dateValid ? <Copy>Enter a valid date in YYYY-MM-DD format.</Copy> : null}
+    <SectionTitle title="Unit system" />
+    <View style={{ marginTop: 2 }}><Option title="Metric · kg / cm" selected={units === 'kg'} onPress={() => changeUnits('kg')} /><Option title="Imperial · lb / ft" selected={units === 'lb'} onPress={() => changeUnits('lb')} /></View>
+    <SectionTitle title="Height" />
+    {units === 'kg' ? <TextInput accessibilityLabel="Height in centimeters" value={heightCmDraft} onChangeText={setHeightCmDraft} placeholder="Height in cm" placeholderTextColor={C.muted} keyboardType="decimal-pad" style={uiStyles.input} /> : <View style={{ flexDirection: 'row', gap: 10 }}><TextInput accessibilityLabel="Height in feet" value={feet} onChangeText={setFeet} placeholder="Feet" placeholderTextColor={C.muted} keyboardType="number-pad" style={[uiStyles.input, { flex: 1 }]} /><TextInput accessibilityLabel="Height in inches" value={inches} onChangeText={setInches} placeholder="Inches" placeholderTextColor={C.muted} keyboardType="decimal-pad" style={[uiStyles.input, { flex: 1 }]} /></View>}
+    {!heightValid ? <Copy>Enter a height between 50 cm and 280 cm.</Copy> : null}
+    <SectionTitle title="Current weight" />
+    <Card><Text style={s.cardTitle}>{latestWeight ? `${formatWeight(latestWeight.weight, latestWeight.units, units)} ${units}` : 'Not logged yet'}</Text><Copy>The latest bodyweight entry is shown here. New measurements are added to your history.</Copy></Card>
+    <SectionTitle title={`Add a weight (${units})`} /><TextInput accessibilityLabel={`New weight in ${units}`} value={newWeight} onChangeText={setNewWeight} placeholder={`Weight in ${units}`} placeholderTextColor={C.muted} keyboardType="decimal-pad" style={uiStyles.input} />
+    {!weightValid ? <Copy>Enter a valid positive weight.</Copy> : null}
+    <Action title="Save personal information" disabled={!dateValid || !heightValid || !weightValid} onPress={save} />
+  </Screen>;
+}
+
 type ConfirmAction = { title: string; message: string; confirm: string; onConfirm: () => void };
 export function SettingsScreen() {
-  const { state, setUnits, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData } = useSteadiifit();
+  const { state, updateWorkoutSettings, clearWorkoutHistory, clearNutritionData, resetPlan, resetAppData } = useSteadiifit();
   const [confirmation, setConfirmation] = useState<ConfirmAction | null>(null);
   const confirm = (value: ConfirmAction) => setConfirmation(value);
   const finish = () => { const action = confirmation?.onConfirm; setConfirmation(null); action?.(); };
   const toggle = (enabled: boolean) => <Pressable accessibilityRole="switch" accessibilityState={{ checked: enabled }} accessibilityLabel="Automatically start rest timer" onPress={() => updateWorkoutSettings({ autoStartRest: !enabled })} style={[s.switch, enabled && s.switchOn]}><View style={[s.switchThumb, enabled && s.switchThumbOn]} /></Pressable>;
-  return <Screen><TopBar title="Settings" /><Eyebrow>YOUR APP, YOUR PREFERENCES</Eyebrow><Heading>Settings</Heading><Copy>Manage the preferences that affect your training experience.</Copy>
-    <SectionTitle title="Account" /><Card onPress={() => router.push('/profile/edit')} style={s.settingsRow}><View style={{ flex: 1 }}><Text style={s.cardTitle}>Profile & personalization</Text><Copy>Edit your name and plan preferences</Copy></View><Text style={s.chevron}>›</Text></Card>
-    <SectionTitle title="Workout" /><Card><Text style={s.cardTitle}>Units</Text><Copy>Convert weight displays without changing saved workout data.</Copy><View style={s.unitChoiceRow}>{([{ label: 'Metric · kg', unit: 'kg' }, { label: 'Imperial · lb', unit: 'lb' }] as const).map(choice => <Pressable key={choice.unit} accessibilityRole="radio" accessibilityState={{ selected: state.units === choice.unit }} onPress={() => setUnits(choice.unit)} style={[s.unitChoice, state.units === choice.unit && s.unitChoiceActive]}><Text style={[s.unitChoiceText, state.units === choice.unit && s.unitChoiceTextActive]}>{choice.label}</Text></Pressable>)}</View></Card>
+  return <Screen><PrimaryHeader title="Settings" /><Eyebrow>YOUR APP, YOUR PREFERENCES</Eyebrow><Copy>Manage the preferences that affect your training experience.</Copy>
+    <SectionTitle title="Workout" />
     <Card><Text style={s.cardTitle}>Rest timer duration</Text><Copy>Used between sets. You can still adjust or skip each rest.</Copy><View style={s.unitChoiceRow}>{[60, 90, 120].map(seconds => <Pressable key={seconds} accessibilityRole="radio" accessibilityState={{ selected: state.workoutSettings.defaultRestSeconds === seconds }} onPress={() => updateWorkoutSettings({ defaultRestSeconds: seconds })} style={[s.restChoice, state.workoutSettings.defaultRestSeconds === seconds && s.unitChoiceActive]}><Text style={[s.unitChoiceText, state.workoutSettings.defaultRestSeconds === seconds && s.unitChoiceTextActive]}>{seconds}s</Text></Pressable>)}</View></Card>
     <Card style={s.settingsRow}><View style={{ flex: 1, paddingRight: 12 }}><Text style={s.cardTitle}>Automatically start rest timer</Text><Copy>Start countdown after each completed set.</Copy></View>{toggle(state.workoutSettings.autoStartRest)}</Card>
-    <SectionTitle title="Local data" /><Copy style={s.dataNotice}>This frontend keeps data in the current app session. It resets on reload; nothing is synced to a server.</Copy>
+    <SectionTitle title="Local data" /><Copy style={s.dataNotice}>Some app state stays local. Nutrition entries sync to your signed-in account and load again on restart.</Copy>
     <Card><Text style={s.cardTitle}>Reset plan</Text><Copy>Regenerate this week from your current preferences. Workout history and progress are kept.</Copy><Action title="Regenerate plan" secondary onPress={() => confirm({ title: 'Regenerate your plan?', message: 'Your current weekly plan and exercise edits will be replaced using your saved preferences. Workout history will remain.', confirm: 'Regenerate plan', onConfirm: resetPlan })} /></Card>
     <Card><Text style={s.cardTitle}>Clear workout history</Text><Copy>Remove completed workouts and progress calculated from those sessions. Body-weight entries are kept.</Copy><Action title="Clear workout history" secondary onPress={() => confirm({ title: 'Clear workout history?', message: 'This removes all completed workouts from this in-memory app session. Workout statistics and PRs based on them will disappear. Body-weight entries will remain.', confirm: 'Clear history', onConfirm: clearWorkoutHistory })} /></Card>
-    <Card><Text style={s.cardTitle}>Clear nutrition data</Text><Copy>Remove all food entries from this app session.</Copy><Action title="Clear nutrition data" secondary onPress={() => confirm({ title: 'Clear nutrition data?', message: 'This removes all logged food from the current in-memory app session.', confirm: 'Clear nutrition', onConfirm: clearNutritionData })} /></Card>
+    <Card><Text style={s.cardTitle}>Clear nutrition data</Text><Copy>Remove all food entries saved to your account.</Copy><Action title="Clear nutrition data" secondary onPress={() => confirm({ title: 'Clear nutrition data?', message: 'This permanently deletes all nutrition entries saved to your account and clears them from the current session.', confirm: 'Clear nutrition', onConfirm: clearNutritionData })} /></Card>
     <Card style={s.resetCard}><Text style={s.cardTitle}>Reset app data</Text><Copy>Return profile, plan, workouts, favorites, body weight, nutrition, chat, and workout settings to the fresh demo state.</Copy><Action title="Reset all app data" secondary onPress={() => confirm({ title: 'Reset all app data?', message: 'This clears all current in-memory app data, including your profile settings, active workout, workout history, body weight, nutrition, favorites, and Coach conversation. The app will return to onboarding. This cannot be undone in the current session.', confirm: 'Reset all data', onConfirm: () => { resetAppData(); router.replace('/onboarding'); } })} /></Card>
-    <SectionTitle title="About" /><Card onPress={() => router.push('/about')} style={s.settingsRow}><View style={{ flex: 1 }}><Text style={s.cardTitle}>About Steadiifit</Text><Copy>Version {Constants.expoConfig?.version ?? 'Unavailable'} · Privacy and terms</Copy></View><Text style={s.chevron}>›</Text></Card>
     <Modal visible={Boolean(confirmation)} transparent animationType="fade" onRequestClose={() => setConfirmation(null)}><View style={s.modalShade}><View style={s.confirmCard}><Eyebrow>PLEASE CONFIRM</Eyebrow><Heading size={22}>{confirmation?.title}</Heading><Copy>{confirmation?.message}</Copy><Pressable accessibilityRole="button" onPress={finish} style={s.destructiveAction}><Text style={s.destructiveText}>{confirmation?.confirm}</Text></Pressable><Action title="Cancel" secondary onPress={() => setConfirmation(null)} /></View></View></Modal>
   </Screen>;
 }
 
 export function AboutScreen() {
   const version = Constants.expoConfig?.version;
-  return <Screen><TopBar title="About" /><Eyebrow>STEADIIFIT</Eyebrow><Heading>Your personalized fitness companion.</Heading><Copy>A focused place to plan workouts, track progress, and build consistent habits.</Copy><Card style={s.aboutBrand}><Text style={s.brand}>Steadiifit</Text><Copy style={{ marginTop: 8 }}>Version {version ?? 'Unavailable'}</Copy><Copy style={s.aboutFootnote}>Frontend demo · Your app data stays in this session and is not synced.</Copy></Card><SectionTitle title="Privacy" /><Card><Text style={s.cardTitle}>Privacy information</Text><Copy>A privacy policy will be available if cloud services are introduced. This frontend demo does not connect to a backend or sync your data.</Copy></Card><SectionTitle title="Terms" /><Card><Text style={s.cardTitle}>Terms of use</Text><Copy>Terms of use have not been published for this frontend demo.</Copy></Card></Screen>;
+  return <Screen><PrimaryHeader title="About" /><Eyebrow>STEADIIFIT</Eyebrow><Heading>Your personalized fitness companion.</Heading><Copy>A focused place to plan workouts, track progress, and build consistent habits.</Copy><Card style={s.aboutBrand}><Text style={s.brand}>Steadiifit</Text><Copy style={{ marginTop: 8 }}>Version {version ?? 'Unavailable'}</Copy><Copy style={s.aboutFootnote}>Frontend demo · Your app data stays in this session and is not synced.</Copy></Card><SectionTitle title="Privacy" /><Card><Text style={s.cardTitle}>Privacy information</Text><Copy>A privacy policy will be available if cloud services are introduced. This frontend demo does not connect to a backend or sync your data.</Copy></Card><SectionTitle title="Terms" /><Card><Text style={s.cardTitle}>Terms of use</Text><Copy>Terms of use have not been published for this frontend demo.</Copy></Card></Screen>;
 }
 
 const s = StyleSheet.create({
   welcome: { flexGrow: 1, justifyContent: 'space-between', paddingTop: 70, paddingBottom: 24 }, welcomeBrand: { marginTop: 90, gap: 9 },
   progressTrack: { height: 5, backgroundColor: C.line, borderRadius: 4, overflow: 'hidden', marginBottom: 19 }, progressFill: { height: 5, backgroundColor: C.ink },
   loading: { flex: 1, backgroundColor: C.background, alignItems: 'center', justifyContent: 'center', gap: 10 },
-  brandHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 15 }, brand: { fontFamily: 'BricolageBold', fontSize: 18, color: C.ink }, avatar: { width: 34, height: 34, borderRadius: 17, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, avatarBig: { width: 56, height: 56, borderRadius: 28, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, avatarLabel: { color: '#FFF', fontFamily: 'InterBold', fontSize: 16 },
+  primaryHeader: { height: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }, headerButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }, headerAvatar: { borderRadius: 20, backgroundColor: C.ink }, hamburger: { width: 20, height: 16, justifyContent: 'space-between', paddingVertical: 1 }, hamburgerLine: { width: 20, height: 2, borderRadius: 1, backgroundColor: C.ink }, primaryHeaderTitle: { flex: 1, textAlign: 'center', color: C.ink, fontFamily: 'BricolageBold', fontSize: 17 }, drawerShade: { flex: 1, flexDirection: 'row', backgroundColor: 'rgba(21,20,15,0.42)' }, drawerPanel: { width: 310, maxWidth: '84%', height: '100%', backgroundColor: C.background, paddingTop: 22, paddingHorizontal: 18 }, drawerHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 5, paddingBottom: 14, borderBottomWidth: 1, borderColor: C.line }, drawerClose: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center' }, drawerCloseText: { color: C.muted, fontSize: 27, lineHeight: 30 }, drawerItem: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderColor: C.line, paddingHorizontal: 5 }, drawerItemText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14 }, brand: { fontFamily: 'BricolageBold', fontSize: 18, color: C.ink }, avatarBig: { width: 56, height: 56, borderRadius: 28, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, avatarLabel: { color: '#FFF', fontFamily: 'InterBold', fontSize: 16 },
   hero: { backgroundColor: C.ink, borderColor: C.ink, marginTop: 12 }, heroTitle: { color: '#FFF', fontFamily: 'BricolageExtraBold', fontSize: 24, marginTop: 5 }, heroMeta: { color: '#D2CEC3', fontFamily: 'InterRegular', fontSize: 12, marginTop: 5 }, heroStart: { alignItems: 'center', paddingVertical: 9 }, heroStartText: { color: '#FFF', fontFamily: 'InterBold', fontSize: 13 },
   cardTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14, marginBottom: 5 }, statsRow: { flexDirection: 'row', gap: 8, marginTop: 9 }, stat: { flex: 1, minHeight: 62, alignItems: 'center', justifyContent: 'center', backgroundColor: C.surface, borderColor: C.line, borderWidth: 1, borderRadius: 14 }, statValue: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 17 }, statLabel: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, marginTop: 3 },
   planRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13 }, day: { color: C.muted, fontSize: 11, fontWeight: '700', width: 34 }, chevron: { color: C.muted, fontSize: 22 }, recommend: { backgroundColor: '#FBF7F1', borderColor: '#D8C4AD' }, pills: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 10 }, chips: { gap: 7, paddingBottom: 12 }, chip: { borderRadius: 18, borderWidth: 1, borderColor: C.line, paddingHorizontal: 13, paddingVertical: 8 }, chipActive: { backgroundColor: C.ink, borderColor: C.ink }, chipText: { color: C.ink, fontSize: 12, fontWeight: '600' }, chipTextActive: { color: '#FFF' }, prescription: { marginTop: 9, color: C.accent, fontSize: 12, fontWeight: '700' },
@@ -554,8 +755,9 @@ const s = StyleSheet.create({
   weekDays: { flexDirection: 'row', justifyContent: 'space-between' }, weekDay: { alignItems: 'center', gap: 7, flex: 1 }, weekDot: { width: 27, height: 27, borderRadius: 14, backgroundColor: C.background, borderColor: C.line, borderWidth: 1, alignItems: 'center', justifyContent: 'center' }, weekDotDone: { backgroundColor: C.green, borderColor: C.green }, weekCheck: { color: C.muted, fontSize: 12, fontFamily: 'InterBold' }, weekLabel: { color: C.muted, fontSize: 10, fontFamily: 'InterSemiBold' },
   historyCardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }, linkArrow: { color: C.accent, fontSize: 24, lineHeight: 25 }, weightValue: { color: C.ink, fontFamily: 'InterBold', fontSize: 14 }, chartArea: { minHeight: 150, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', gap: 4, borderBottomWidth: 1, borderBottomColor: C.line, marginTop: 18, paddingHorizontal: 3 }, chartColumn: { flex: 1, minWidth: 0, alignItems: 'center', justifyContent: 'flex-end' }, chartPoint: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 9, marginBottom: 4 }, chartBar: { width: '55%', maxWidth: 28, minWidth: 10, backgroundColor: C.accent, borderTopLeftRadius: 5, borderTopRightRadius: 5 }, chartDate: { color: C.muted, fontFamily: 'InterRegular', fontSize: 9, marginTop: 5, marginBottom: 4 },
   profileHead: { flexDirection: 'row', alignItems: 'center', gap: 13, marginVertical: 13 }, profileRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8 }, profileValue: { color: C.ink, fontSize: 13, fontWeight: '700' }, unitRow: { flexDirection: 'row', gap: 8, marginTop: 12 }, unit: { minWidth: 54, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1, borderColor: C.line, borderRadius: 16 }, unitSelected: { backgroundColor: C.ink, borderColor: C.ink }, unitText: { color: C.ink, textAlign: 'center', fontWeight: '700' },
-  editProfileButton: { minWidth: 54, minHeight: 40, justifyContent: 'center', alignItems: 'flex-end' }, editProfileText: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 13, padding: 7 }, profileHero: { marginTop: 6, padding: 18 }, profileHeroRow: { flexDirection: 'row', alignItems: 'center', gap: 14 }, profileName: { marginBottom: 3 }, profileExperience: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 11, marginTop: 14 }, profileStats: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, profileLinkCard: { minHeight: 72, flexDirection: 'row', alignItems: 'center', paddingVertical: 14 }, settingsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
+  profileHero: { marginTop: 6, padding: 18 }, profileHeroRow: { flexDirection: 'row', alignItems: 'center', gap: 14 }, profileName: { marginBottom: 3 }, profileLinkCard: { minHeight: 72, flexDirection: 'row', alignItems: 'center', paddingVertical: 14 }, settingsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14 },
   unitChoiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }, unitChoice: { flexGrow: 1, minHeight: 42, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: C.line, borderRadius: 13, paddingHorizontal: 10, paddingVertical: 9 }, unitChoiceActive: { backgroundColor: C.ink, borderColor: C.ink }, unitChoiceText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, textAlign: 'center' }, unitChoiceTextActive: { color: '#FFF' }, restChoice: { minWidth: 68, minHeight: 42, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: C.line, borderRadius: 13, paddingHorizontal: 14, paddingVertical: 9 }, switch: { width: 52, height: 32, borderRadius: 16, backgroundColor: C.line, padding: 3, justifyContent: 'center' }, switchOn: { backgroundColor: C.green }, switchThumb: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#FFF', alignSelf: 'flex-start' }, switchThumbOn: { alignSelf: 'flex-end' }, dataNotice: { fontSize: 12, marginBottom: 10 }, resetCard: { borderColor: '#D8B7A8', backgroundColor: '#FBF5F1' }, confirmCard: { backgroundColor: C.background, padding: 22, paddingBottom: 18, borderRadius: 22, marginHorizontal: 20, width: '90%', maxWidth: 430, alignSelf: 'center' }, destructiveAction: { minHeight: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: '#A04435', borderRadius: 14, marginTop: 16, marginBottom: 8, paddingHorizontal: 16 }, destructiveText: { color: '#FFF', fontFamily: 'InterBold', fontSize: 14 }, aboutBrand: { marginTop: 20, paddingVertical: 22 }, aboutFootnote: { fontSize: 11, marginTop: 13 },
-  macroGrid: { gap: 8 }, macroCard: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 15, padding: 14 }, macroHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 }, macroTotal: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, macroTrack: { height: 6, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden', marginTop: 5 }, macroFill: { height: 6, borderRadius: 4 }, macroRemaining: { fontSize: 11, marginTop: 7 }, calorieCard: { marginTop: 14, backgroundColor: C.surface }, calorieHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, calorieValue: { color: C.ink, fontFamily: 'BricolageExtraBold', fontSize: 28, marginTop: 4 }, calorieTarget: { color: C.muted, fontFamily: 'InterRegular', fontSize: 13 }, calorieGlyph: { fontSize: 34, color: C.accent }, calorieTrack: { height: 8, borderRadius: 5, backgroundColor: C.line, overflow: 'hidden', marginTop: 13 }, calorieFill: { height: 8, borderRadius: 5, backgroundColor: C.accent }, targetNote: { marginTop: 10, backgroundColor: '#FBF7F1', borderColor: '#D8C4AD' }, targetDisclaimer: { fontSize: 10, marginTop: 5 }, nutritionCoachLink: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 13, padding: 6 }, mealTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 17, marginTop: 14, marginBottom: 1 }, foodCard: { paddingVertical: 12 }, foodRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, removeFood: { color: C.muted, fontSize: 24, paddingHorizontal: 5 }, insightCard: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 13 }, insightMark: { color: C.accent, fontSize: 16 }, foodFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, foodField: { width: '48%', flexGrow: 1 }, foodLabel: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, marginBottom: 5 }, fieldUnit: { color: C.muted, fontFamily: 'InterRegular' }, formError: { color: '#A04435', marginTop: 8 },
-  coachRoot: { flex: 1, backgroundColor: C.background }, coachContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 7 }, coachClear: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12, padding: 7 }, coachShortcuts: { flexDirection: 'row', gap: 7, marginTop: 12, marginBottom: 9 }, coachShortcut: { borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, borderRadius: 15, paddingHorizontal: 11, paddingVertical: 7 }, coachShortcutText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, chatScroll: { flex: 1, minHeight: 150 }, chatMessages: { paddingVertical: 8, gap: 9, flexGrow: 1, justifyContent: 'flex-end' }, chatBubble: { maxWidth: '88%', paddingHorizontal: 13, paddingVertical: 11, borderRadius: 17 }, assistantBubble: { alignSelf: 'flex-start', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderBottomLeftRadius: 5 }, userBubble: { alignSelf: 'flex-end', backgroundColor: C.ink, borderBottomRightRadius: 5 }, chatText: { color: C.ink, fontFamily: 'InterRegular', fontSize: 13, lineHeight: 19 }, userChatText: { color: '#FFF' }, typingBubble: { flexDirection: 'row', alignItems: 'center', gap: 8 }, chatTyping: { color: C.muted, fontSize: 11 }, promptRow: { gap: 7, paddingVertical: 8 }, promptChip: { borderRadius: 18, backgroundColor: C.wash, paddingHorizontal: 11, paddingVertical: 8 }, promptText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, borderWidth: 1, borderColor: C.line, borderRadius: 17, backgroundColor: C.surface, padding: 7 }, chatInput: { flex: 1, minHeight: 40, maxHeight: 100, paddingHorizontal: 9, paddingTop: 9, paddingBottom: 8, color: C.ink, fontFamily: 'InterRegular', fontSize: 13 }, sendButton: { width: 38, height: 38, borderRadius: 13, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, sendButtonText: { color: '#FFF', fontSize: 23, lineHeight: 25 }, localNote: { textAlign: 'center', fontSize: 9, marginTop: 5 },
+  homeNutritionCard: { marginBottom: 5, borderColor: '#D8C4AD', backgroundColor: '#FBF7F1' }, homeNutritionLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, homeNutritionValue: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 13 }, homeStreak: { marginTop: 8, marginBottom: 5, fontFamily: 'InterSemiBold', fontSize: 11 }, nutritionHistoryCalories: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, nutritionHistoryEmpty: { marginTop: 6, marginBottom: 10 },
+  macroGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, macroCard: { flexGrow: 1, width: '48%', minWidth: '47%', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderRadius: 15, padding: 11 }, macroHead: { gap: 4 }, macroTotal: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12 }, macroTrack: { height: 6, borderRadius: 4, backgroundColor: C.line, overflow: 'hidden', marginTop: 8 }, macroFill: { height: 6, borderRadius: 4 }, macroRemaining: { fontFamily: 'InterSemiBold', fontSize: 10, marginTop: 7 }, calorieCard: { marginTop: 8, backgroundColor: C.surface, paddingVertical: 13 }, calorieHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, calorieValue: { color: C.ink, fontFamily: 'BricolageExtraBold', fontSize: 25, marginTop: 2 }, calorieTarget: { color: C.muted, fontFamily: 'InterRegular', fontSize: 13 }, calorieGlyph: { fontSize: 30, color: C.accent }, calorieTrack: { height: 7, borderRadius: 5, backgroundColor: C.line, overflow: 'hidden', marginTop: 9 }, calorieFill: { height: 7, borderRadius: 5, backgroundColor: C.accent }, targetNote: { marginTop: 10, backgroundColor: '#FBF7F1', borderColor: '#D8C4AD' }, targetDisclaimer: { fontSize: 10, marginTop: 5 }, nutritionCoachLink: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 13, padding: 6 }, mealTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 17, marginTop: 14, marginBottom: 1 }, foodCard: { paddingVertical: 10, marginBottom: 4 }, foodRow: { flexDirection: 'row', alignItems: 'center', gap: 8 }, removeFood: { color: C.muted, fontSize: 24, paddingHorizontal: 5 }, insightCard: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 13 }, insightMark: { color: C.accent, fontSize: 16 }, mealSuggestions: { marginTop: 3, marginBottom: 6 }, suggestionChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 7 }, suggestionChip: { maxWidth: '48%', borderWidth: 1, borderColor: C.line, borderRadius: 13, backgroundColor: C.surface, paddingHorizontal: 10, paddingVertical: 7 }, suggestionChipTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, suggestionChipMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 9, marginTop: 2 }, foodFields: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, foodField: { width: '48%', flexGrow: 1 }, foodLabel: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 12, marginBottom: 5 }, fieldUnit: { color: C.muted, fontFamily: 'InterRegular' }, formError: { color: '#A04435', marginTop: 8 },
+  coachRoot: { flex: 1, backgroundColor: C.background }, coachContainer: { flex: 1, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 7 }, coachIntroRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }, coachClear: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12, padding: 7 }, chatScroll: { flex: 1, minHeight: 150 }, chatMessages: { paddingVertical: 8, gap: 9, flexGrow: 1, justifyContent: 'flex-end' }, chatBubble: { maxWidth: '88%', paddingHorizontal: 13, paddingVertical: 11, borderRadius: 17 }, assistantBubble: { alignSelf: 'flex-start', backgroundColor: C.surface, borderWidth: 1, borderColor: C.line, borderBottomLeftRadius: 5 }, userBubble: { alignSelf: 'flex-end', backgroundColor: C.ink, borderBottomRightRadius: 5 }, chatText: { color: C.ink, fontFamily: 'InterRegular', fontSize: 13, lineHeight: 19 }, userChatText: { color: '#FFF' }, typingBubble: { flexDirection: 'row', alignItems: 'center', gap: 8 }, chatTyping: { color: C.muted, fontSize: 11 }, promptRow: { gap: 7, paddingVertical: 8 }, promptChip: { borderRadius: 18, backgroundColor: C.wash, paddingHorizontal: 11, paddingVertical: 8 }, promptText: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 }, chatInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, borderWidth: 1, borderColor: C.line, borderRadius: 17, backgroundColor: C.surface, padding: 7 }, chatInput: { flex: 1, minHeight: 40, maxHeight: 100, paddingHorizontal: 9, paddingTop: 9, paddingBottom: 8, color: C.ink, fontFamily: 'InterRegular', fontSize: 13 }, sendButton: { width: 38, height: 38, borderRadius: 13, backgroundColor: C.ink, alignItems: 'center', justifyContent: 'center' }, sendButtonText: { color: '#FFF', fontSize: 23, lineHeight: 25 }, localNote: { textAlign: 'center', fontSize: 9, marginTop: 5 },
 });

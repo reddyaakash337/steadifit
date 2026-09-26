@@ -166,6 +166,8 @@ export class InMemorySteadiifitRepository implements SteadiifitRepository {
 
   addNutritionEntry = (entry: NutritionEntry): void => this.commit({ ...this.state, foodEntries: [entry, ...this.state.foodEntries] });
 
+  updateNutritionEntry = (entry: NutritionEntry): void => this.commit({ ...this.state, foodEntries: this.state.foodEntries.map(item => item.id === entry.id ? entry : item) });
+
   removeNutritionEntry = (id: string): void => this.commit({ ...this.state, foodEntries: this.state.foodEntries.filter(entry => entry.id !== id) });
 
   clearNutritionEntries = (): void => this.commit({ ...this.state, foodEntries: [] });

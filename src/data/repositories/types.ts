@@ -41,6 +41,7 @@ export interface SteadiifitRepository {
 
   getNutritionEntries(date?: string): NutritionEntry[];
   addNutritionEntry(entry: NutritionEntry): void;
+  updateNutritionEntry(entry: NutritionEntry): void;
   removeNutritionEntry(id: string): void;
   clearNutritionEntries(): void;
 
