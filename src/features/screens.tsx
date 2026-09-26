@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { SymbolView } from 'expo-symbols';
 import { router, useLocalSearchParams } from 'expo-router';
 import Constants from 'expo-constants';
 import { ExerciseCategory, ExerciseDifficulty, exerciseById, exercises, PlanDay, workoutById, workouts } from '@/data/catalog';
@@ -117,12 +118,13 @@ function Stat({ value, label }: { value: string; label: string }) { return <View
 
 export function TrainScreen() {
   const { state } = useSteadiifit();
+  const [trainContentWidth, setTrainContentWidth] = useState(0);
   const today = (new Date().getDay() + 6) % 7;
   const [selectedWeekday, setSelectedWeekday] = useState(today);
   const selectedPlanDay = state.plan.find(day => day.weekday === selectedWeekday);
   const selectedIsToday = selectedWeekday === today;
   const selectedStatus = selectedPlanDay ? planDayStatus(selectedPlanDay, state.history) : undefined;
-    const selectedIsActive = Boolean(selectedIsToday && state.activeWorkout);
+  const selectedIsActive = Boolean(selectedIsToday && state.activeWorkout);
   const selectedExercises = selectedPlanDay?.workoutId ? plannedExercises(selectedPlanDay) : [];
   const futureWorkout = state.plan
     .filter(day => day.workoutId && day.weekday > selectedWeekday)
@@ -143,31 +145,48 @@ export function TrainScreen() {
   };
   const selectedActionLabel = selectedIsActive ? 'Resume workout  →' : selectedPlanDay?.workoutId ? 'View workout  →' : selectedPlanDay ? 'View weekly plan  →' : 'Set up plan  →';
   const latestWorkout = sortWorkoutsNewest(state.history)[0];
-  const latestSetCount = latestWorkout?.exercises.reduce((total, item) => total + item.sets.length, 0) ?? 0;
-  return <Screen>
+  const recentWorkouts = sortWorkoutsNewest(state.history).slice(0, 2);
+  const weekStart = startOfWeek(new Date());
+  const destinations = [
+    { title: 'My Plan', detail: 'Manage your detailed weekly schedule', route: '/(tabs)/plan' as const, symbol: { ios: 'calendar', android: 'calendar_month', web: 'calendar_month' } },
+    { title: 'Workouts', detail: 'Browse the full workout catalog', route: '/(tabs)/workouts' as const, symbol: { ios: 'dumbbell', android: 'fitness_center', web: 'fitness_center' } },
+    { title: 'Exercise Library', detail: 'Browse movements, equipment and muscle groups', route: '/exercises' as const, symbol: { ios: 'list.bullet', android: 'format_list_bulleted', web: 'format_list_bulleted' } },
+  ] as const;
+  return <Screen style={n.trainScreen}>
     <PrimaryHeader title="Train" />
-    <SectionTitle title="Weekly plan" />
+    <View onLayout={event => setTrainContentWidth(event.nativeEvent.layout.width)} style={n.trainPageContent}>
+    <View style={n.trainIntro}>
+      <Heading size={28}>Train</Heading>
+      <Copy>Plan your week, choose a workout, or find an exercise.</Copy>
+    </View>
+    <View style={n.weekSection}>
+      <View style={n.weekSectionHeading}><View><Eyebrow>YOUR SCHEDULE</Eyebrow><Text style={n.weekSectionTitle}>Weekly plan</Text></View><Text style={n.weekRange}>THIS WEEK</Text></View>
     {state.plan.length ? <>
       <View style={n.weekSelector}>
         {weekdayLabels.map((label, weekdayIndex) => {
           const day = state.plan.find(item => item.weekday === weekdayIndex);
           const status = day ? planDayStatus(day, state.history) : undefined;
-          const active = Boolean(day?.workoutId && weekdayIndex === today && state.activeWorkout?.workoutId === day.workoutId);
+          const active = Boolean(day?.workoutId && weekdayIndex === today && state.activeWorkout);
           const completed = status === 'Completed';
           const current = weekdayIndex === today;
-          const mark = active ? '●' : completed ? '✓' : day?.workoutId ? current ? '●' : '○' : '—';
-          return <Pressable key={weekdayIndex} accessibilityRole="button" accessibilityLabel={`${dayName(weekdayIndex)}${day?.workoutId ? `, ${planDayName(day)}` : ', rest day'}`} accessibilityState={{ selected: selectedWeekday === weekdayIndex }} onPress={() => setSelectedWeekday(weekdayIndex)} style={n.weekDayChoice}>
-            <Text style={n.weekDayName}>{label}</Text>
-            <View style={[n.weekDayMark, current && n.weekDayCurrent, selectedWeekday === weekdayIndex && n.weekDaySelected, completed && n.weekDayCompleted]}><Text style={[n.weekDayMarkText, completed && n.weekDayMarkCompleted]}>{mark}</Text></View>
-            <Text numberOfLines={1} style={n.weekDayNumber}>{new Date(startOfWeek(new Date()).getFullYear(), startOfWeek(new Date()).getMonth(), startOfWeek(new Date()).getDate() + weekdayIndex).getDate()}</Text>
+          let mark = '·';
+          if (active) mark = '●';
+          else if (completed) mark = '✓';
+          else if (status === 'Skipped') mark = '×';
+          else if (day?.workoutId) mark = current ? '●' : '○';
+          else if (day) mark = '—';
+              return <Pressable key={weekdayIndex} accessibilityRole="button" accessibilityLabel={`${dayName(weekdayIndex)}${day?.workoutId ? `, ${planDayName(day)}` : day ? ', rest day' : ', unplanned'}`} accessibilityState={{ selected: selectedWeekday === weekdayIndex }} onPress={() => setSelectedWeekday(weekdayIndex)} style={[n.weekDayChoice, current && n.weekDayChoiceToday, completed && n.weekDayChoiceCompleted, status === 'Rest' && n.weekDayChoiceRest, selectedWeekday === weekdayIndex && n.weekDayChoiceSelected]}>
+            <Text style={[n.weekDayName, selectedWeekday === weekdayIndex && n.weekDayTextSelected]}>{label}</Text>
+            <Text style={[n.weekDayNumber, selectedWeekday === weekdayIndex && n.weekDayTextSelected]}>{new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + weekdayIndex).getDate()}</Text>
+                <View style={[n.weekDayIndicator, current && n.weekDayIndicatorToday, completed && n.weekDayIndicatorCompleted, selectedWeekday === weekdayIndex && n.weekDayIndicatorSelected]}><Text style={[n.weekDayMarkText, completed && n.weekDayMarkCompleted, selectedWeekday === weekdayIndex && n.weekDayTextSelected]}>{mark}</Text></View>
           </Pressable>;
         })}
       </View>
       <View style={n.selectedDayPanel}>
         <View style={n.selectedDayText}>
-          <Eyebrow>{dayName(selectedWeekday).toUpperCase()}{selectedIsToday ? ' · TODAY' : ''}</Eyebrow>
+          <Eyebrow>{dayName(selectedWeekday).toUpperCase()}{selectedIsToday ? ' · TODAY' : ''}{selectedStatus === 'Completed' ? ' · COMPLETED' : ''}</Eyebrow>
           <Text style={n.selectedDayTitle}>{selectedIsActive ? state.activeWorkout?.workoutName : selectedTitle}</Text>
-            <Copy style={n.selectedDayMeta}>{selectedIsActive ? 'Workout in progress · Resume when ready' : selectedStatus === 'Completed' ? `Completed${futureWorkout ? ` · Next ${planDayName(futureWorkout)}` : ''}` : selectedStatus === 'Skipped' ? `Not completed · ${selectedDetail}` : selectedDetail}</Copy>
+          <Copy style={n.selectedDayMeta}>{selectedIsActive ? 'Workout in progress · Resume when ready' : selectedStatus === 'Completed' ? `Completed${futureWorkout ? ` · Next ${planDayName(futureWorkout)}` : ''}` : selectedStatus === 'Skipped' ? `Not completed · ${selectedDetail}` : selectedDetail}</Copy>
         </View>
         <Pressable accessibilityRole="button" onPress={selectedAction} style={n.selectedDayAction}><Text style={n.selectedDayActionText}>{selectedActionLabel}</Text></Pressable>
       </View>
@@ -176,24 +195,28 @@ export function TrainScreen() {
       <Copy>Set up your schedule to see your training week here.</Copy>
       <Action title="Set up plan  →" onPress={() => router.push('/plan/customize')} />
     </View>}
+    </View>
 
     <SectionTitle title="Training" />
-    <Pressable accessibilityRole="button" onPress={() => router.push('/(tabs)/plan')} style={n.trainDestinationRow}>
-      <View style={n.trainDestinationText}><Text style={n.trainDestinationTitle}>My Plan</Text><Text style={n.trainDestinationMeta}>Manage your detailed weekly schedule</Text></View><Text style={s.chevron}>›</Text>
-    </Pressable>
-    <Pressable accessibilityRole="button" onPress={() => router.push('/(tabs)/workouts')} style={n.trainDestinationRow}>
-      <View style={n.trainDestinationText}><Text style={n.trainDestinationTitle}>Workouts</Text><Text style={n.trainDestinationMeta}>Browse the full workout catalog</Text></View><Text style={s.chevron}>›</Text>
-    </Pressable>
-    <Pressable accessibilityRole="button" onPress={() => router.push('/exercises')} style={n.trainDestinationRow}>
-      <View style={n.trainDestinationText}><Text style={n.trainDestinationTitle}>Exercise Library</Text><Text style={n.trainDestinationMeta}>Browse movements, equipment and muscle groups</Text></View><Text style={s.chevron}>›</Text>
-    </Pressable>
+    <View style={[n.destinationGroup, trainContentWidth >= 700 && n.destinationGroupWide]}>
+      {destinations.map(item => <Pressable key={item.title} accessibilityRole="button" onPress={() => router.push(item.route)} style={[n.destinationTile, trainContentWidth >= 700 && n.destinationTileWide]}>
+        <View style={n.destinationIcon}><SymbolView name={item.symbol} size={19} weight="medium" tintColor={C.accent} /></View>
+        <View style={n.destinationText}><Text style={n.destinationTitle}>{item.title}</Text><Text numberOfLines={2} style={n.destinationMeta}>{item.detail}</Text></View>
+        <Text style={n.destinationArrow}>›</Text>
+      </Pressable>)}
+    </View>
 
     {latestWorkout ? <>
       <SectionTitle title="Recent training" action="History" onPress={() => router.push('/history')} />
-      <Card style={n.trainRecentCard} onPress={() => openHistoryItem(latestWorkout.id)}>
-        <View style={s.historyCardTop}><View style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={1} style={s.cardTitle}>{latestWorkout.name}</Text><Copy>{formatDate(workoutTimestamp(latestWorkout))} · {latestSetCount} sets</Copy></View><Text style={s.chevron}>›</Text></View>
-      </Card>
+      <View style={n.recentTrainList}>{recentWorkouts.map(workout => {
+        const setCount = workout.exercises.reduce((total, item) => total + item.sets.length, 0);
+        return <Pressable key={workout.id} accessibilityRole="button" onPress={() => openHistoryItem(workout.id)} style={n.recentTrainRow}>
+          <View style={n.recentTrainCopy}><Text numberOfLines={1} style={n.recentTrainTitle}>{workout.name}</Text><Text style={n.recentTrainMeta}>{formatDate(workoutTimestamp(workout))} · {setCount} {setCount === 1 ? 'set' : 'sets'}</Text></View>
+          <Text style={n.destinationArrow}>›</Text>
+        </Pressable>;
+      })}</View>
     </> : null}
+    </View>
   </Screen>;
 }
 
@@ -770,7 +793,7 @@ const n = StyleSheet.create({
   homeHeroVisualWide: { width: '36%', maxWidth: 380, height: 246 },
   homeHeroVisualMobile: { width: '48%', maxWidth: 180, height: 182 },
   homeHeroVisualImage: { width: '100%', height: '100%' },
-  screen: { maxWidth: 1240 },
+  screen: { maxWidth: 1280 },
   summary: { gap: 20, alignItems: 'stretch', marginTop: 8, marginBottom: 10 },
   calorieCard: { minHeight: 250, justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 24, borderRadius: 16 },
   calorieCardMobile: { minHeight: 195, paddingHorizontal: 20, paddingVertical: 20 },
@@ -823,24 +846,49 @@ const n = StyleSheet.create({
   trainDestinationText: { flex: 1, minWidth: 0 },
   trainDestinationTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 14 },
   trainDestinationMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 12, marginTop: 3 },
-  trainRecentCard: { paddingVertical: 12, marginBottom: 0 },
-  weekSelector: { flexDirection: 'row', justifyContent: 'space-between', gap: 4, paddingVertical: 9, borderTopWidth: 1, borderBottomWidth: 1, borderColor: C.line },
-  weekDayChoice: { flex: 1, minWidth: 0, alignItems: 'center', gap: 5, paddingVertical: 5 },
+  trainScreen: { width: '100%', maxWidth: 1280, alignSelf: 'center', paddingTop: 18, paddingBottom: 42 },
+  trainPageContent: { width: '100%' },
+  trainIntro: { marginTop: 4, marginBottom: 8 },
+  weekSection: { marginTop: 11, padding: 16, borderRadius: 18, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface },
+  weekSectionHeading: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 14 },
+  weekSectionTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 23, lineHeight: 28 },
+  weekRange: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10, paddingBottom: 4 },
+  weekSelector: { flexDirection: 'row', justifyContent: 'space-between', gap: 3 },
+  weekDayChoice: { flex: 1, minWidth: 0, minHeight: 79, alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 7, borderRadius: 13, borderWidth: 1, borderColor: C.line, backgroundColor: C.background },
+  weekDayChoiceToday: { borderColor: '#C8A987' },
+  weekDayChoiceSelected: { backgroundColor: C.accent, borderColor: C.accent },
+  weekDayChoiceCompleted: { backgroundColor: C.greenWash, borderColor: '#D4E2D6' },
+  weekDayChoiceRest: { backgroundColor: '#F7F5F0', borderColor: '#EBE8E0' },
   weekDayName: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 10 },
-  weekDayMark: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent' },
-  weekDayCurrent: { borderColor: C.accent },
-  weekDaySelected: { backgroundColor: C.wash },
-  weekDayCompleted: { backgroundColor: C.ink },
+  weekDayIndicator: { width: 24, height: 21, alignItems: 'center', justifyContent: 'center' },
+  weekDayIndicatorToday: { borderRadius: 10, backgroundColor: '#F4EDE3' },
+  weekDayIndicatorSelected: { backgroundColor: 'rgba(255,255,255,0.17)' },
+  weekDayIndicatorCompleted: { borderRadius: 10, backgroundColor: C.green },
   weekDayMarkText: { color: C.muted, fontFamily: 'InterSemiBold', fontSize: 12 },
   weekDayMarkCompleted: { color: '#FFF' },
-  weekDayNumber: { color: C.ink, fontFamily: 'InterRegular', fontSize: 10 },
-  selectedDayPanel: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, borderBottomWidth: 1, borderColor: C.line },
+  weekDayNumber: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 11 },
+  weekDayTextSelected: { color: '#FFF' },
+  selectedDayPanel: { flexDirection: 'row', alignItems: 'center', gap: 16, marginTop: 14, padding: 16, borderRadius: 14, backgroundColor: C.wash },
   selectedDayText: { flex: 1, minWidth: 0 },
-  selectedDayTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 21, lineHeight: 26, marginBottom: 3 },
+  selectedDayTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 23, lineHeight: 28, marginBottom: 4 },
   selectedDayMeta: { fontSize: 12, lineHeight: 18 },
-  selectedDayAction: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 12 },
-  selectedDayActionText: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 12 },
-  weekEmpty: { paddingVertical: 16, borderTopWidth: 1, borderBottomWidth: 1, borderColor: C.line },
+  selectedDayAction: { minHeight: 43, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14, borderRadius: 11, backgroundColor: C.accent },
+  selectedDayActionText: { color: '#FFF', fontFamily: 'InterSemiBold', fontSize: 12 },
+  weekEmpty: { paddingVertical: 16 },
+  destinationGroup: { flexDirection: 'column', borderRadius: 15, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, paddingHorizontal: 14, marginTop: 3 },
+  destinationGroupWide: { flexDirection: 'row', gap: 8, padding: 10 },
+  destinationTile: { minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.line },
+  destinationTileWide: { flex: 1, minWidth: 0, minHeight: 84, paddingHorizontal: 10, borderBottomWidth: 0, borderRadius: 11, backgroundColor: C.background },
+  destinationIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: C.wash },
+  destinationText: { flex: 1, minWidth: 0 },
+  destinationTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 13 },
+  destinationMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 11, lineHeight: 15, marginTop: 3 },
+  destinationArrow: { color: C.accent, fontFamily: 'InterSemiBold', fontSize: 22, lineHeight: 24 },
+  recentTrainList: { borderTopWidth: 1, borderTopColor: C.line },
+  recentTrainRow: { minHeight: 62, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 14, paddingVertical: 10, backgroundColor: C.surface, borderBottomWidth: 1, borderBottomColor: C.line },
+  recentTrainCopy: { flex: 1, minWidth: 0 },
+  recentTrainTitle: { color: C.ink, fontFamily: 'InterSemiBold', fontSize: 13 },
+  recentTrainMeta: { color: C.muted, fontFamily: 'InterRegular', fontSize: 11, marginTop: 4 },
   monthCalendar: { width: '100%', maxWidth: 680, alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 15, borderRadius: 16, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface },
   monthCalendarHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 11 },
   monthTitle: { color: C.ink, fontFamily: 'BricolageBold', fontSize: 20 },

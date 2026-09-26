@@ -9,6 +9,8 @@ import type {
   WorkoutSessionExercise, WorkoutSet, WorkoutSettings,
 } from '@/types/domain';
 import { createId } from '@/utils/ids';
+import { createVisualQaSnapshot } from '@/data/visualQaFixture';
+import { isVisualQaEnabled } from '@/features/visualQa';
 import { InMemorySteadiifitRepository } from '@/data/repositories/inMemory';
 import type { SteadiifitRepository } from '@/data/repositories/types';
 import { profileRepository } from '@/data/repositories/profile';
@@ -80,7 +82,10 @@ const makeSessionExercise = (exerciseId: string, history: WorkoutHistoryItem[], 
 export function AppProvider({ children }: PropsWithChildren) {
   const { status: authStatus, user } = useAuth();
   const repositoryRef = useRef<SteadiifitRepository | null>(null);
-  if (!repositoryRef.current) repositoryRef.current = new InMemorySteadiifitRepository(createInitialState());
+  if (!repositoryRef.current) {
+    const initialState = createInitialState();
+    repositoryRef.current = new InMemorySteadiifitRepository(isVisualQaEnabled ? createVisualQaSnapshot(initialState) : initialState);
+  }
   const repository = repositoryRef.current;
   const state = useSyncExternalStore(repository.subscribe, repository.getSnapshot, repository.getSnapshot);
   const [profileLoaded, setProfileLoaded] = useState(false);
@@ -104,6 +109,12 @@ export function AppProvider({ children }: PropsWithChildren) {
   const nutritionClearedBeforeLoadRef = useRef(false);
 
   useEffect(() => {
+    if (isVisualQaEnabled) {
+      setPersonalInformation({ dateOfBirth: '1992-04-18', heightCm: 178 });
+      setOnboardingCompleted(true);
+      setProfileLoaded(true);
+      return;
+    }
     if (authStatus !== 'authenticated' || !user) {
       setProfileLoaded(false);
       setOnboardingCompleted(false);
@@ -133,7 +144,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   }, [authStatus, repository, user]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || !user) return;
+    if (isVisualQaEnabled || authStatus !== 'authenticated' || !user) return;
     workoutInitializationRef.current = (async () => {
       const result = await workoutRepository.loadCurrentWorkouts();
       if (result.error || !result.data) {
@@ -151,7 +162,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   }, [authStatus, repository, user]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || !user) return;
+    if (isVisualQaEnabled || authStatus !== 'authenticated' || !user) return;
     bodyweightInitializationRef.current = (async () => {
       const result = await bodyweightRepository.listCurrentEntries();
       if (result.error || !result.data) {
@@ -166,7 +177,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   }, [authStatus, repository, user]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || !user) return;
+    if (isVisualQaEnabled || authStatus !== 'authenticated' || !user) return;
     let active = true;
     if (nutritionLoadedUserIdRef.current && nutritionLoadedUserIdRef.current !== user.id) repository.clearNutritionEntries();
     nutritionLoadedUserIdRef.current = null;
@@ -198,7 +209,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   }, [authStatus, repository, user]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || !user) return;
+    if (isVisualQaEnabled || authStatus !== 'authenticated' || !user) return;
     const initialPlan = initialPlanRef.current;
     planInitializationRef.current = (async () => {
       const result = await planRepository.loadCurrentPlan();
@@ -216,7 +227,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   }, [authStatus, repository, user]);
 
   useEffect(() => {
-    if (authStatus !== 'authenticated' || !user) return;
+    if (isVisualQaEnabled || authStatus !== 'authenticated' || !user) return;
     const initialSettings = initialSettingsRef.current;
     settingsInitializationRef.current = (async () => {
       const result = await settingsRepository.getOrCreateCurrentSettings(initialSettings);
@@ -230,6 +241,7 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   const saveProfile = (profile: Profile, personalDetails?: ProfilePersonalDetails) => {
     repository.updateProfile(profile);
+    if (isVisualQaEnabled) return;
     void (async () => {
       await profileInitializationRef.current;
       const result = await profileRepository.updateCurrentProfile(profile, personalDetails);
@@ -239,6 +251,7 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   const saveSettings = (settings: UserSettings) => {
     repository.updateSettings(settings);
+    if (isVisualQaEnabled) return;
     void (async () => {
       await settingsInitializationRef.current;
       const result = await settingsRepository.updateCurrentSettings(settings);
@@ -247,6 +260,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const persistPlan = (plan: WorkoutPlan) => {
+    if (isVisualQaEnabled) return;
     const save = async () => {
       await planInitializationRef.current;
       const result = await planRepository.saveCurrentPlan(plan);
@@ -261,6 +275,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const queueWorkoutWrite = (write: () => Promise<{ error: unknown | null }>) => {
+    if (isVisualQaEnabled) return;
     const save = async () => {
       await workoutInitializationRef.current;
       const result = await write();
@@ -290,6 +305,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   });
 
   const persistBodyweightEntry = (entry: BodyWeightEntry) => {
+    if (isVisualQaEnabled) return;
     const save = async () => {
       await bodyweightInitializationRef.current;
       const result = await bodyweightRepository.addCurrentEntry(entry);
@@ -299,6 +315,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const clearPersistedBodyweightEntries = () => {
+    if (isVisualQaEnabled) return;
     const clear = async () => {
       await bodyweightInitializationRef.current;
       const result = await bodyweightRepository.deleteAllCurrentEntries();
@@ -308,6 +325,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const persistNutritionEntry = (entry: NutritionEntry) => {
+    if (isVisualQaEnabled) return;
     const save = async () => {
       await nutritionInitializationRef.current;
       const ownerId = user?.id;
@@ -319,6 +337,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const persistNutritionRemoval = (id: string) => {
+    if (isVisualQaEnabled) return;
     if (nutritionLoadedUserIdRef.current !== user?.id) nutritionRemovedBeforeLoadRef.current.add(id);
     const remove = async () => {
       await nutritionInitializationRef.current;
@@ -331,6 +350,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const persistNutritionUpdate = (entry: NutritionEntry) => {
+    if (isVisualQaEnabled) return;
     const update = async () => {
       await nutritionInitializationRef.current;
       const ownerId = user?.id;
@@ -342,6 +362,7 @@ export function AppProvider({ children }: PropsWithChildren) {
   };
 
   const clearPersistedNutritionEntries = () => {
+    if (isVisualQaEnabled) return;
     if (nutritionLoadedUserIdRef.current !== user?.id) nutritionClearedBeforeLoadRef.current = true;
     const clear = async () => {
       await nutritionInitializationRef.current;

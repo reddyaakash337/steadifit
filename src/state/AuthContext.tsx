@@ -1,6 +1,7 @@
 import React, { createContext, PropsWithChildren, useContext, useEffect, useMemo, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { AuthServiceError, SignUpData, authRepository } from '@/data/repositories/auth';
+import { isVisualQaEnabled } from '@/features/visualQa';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 type AuthContextValue = {
@@ -22,6 +23,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (isVisualQaEnabled) {
+      setSession(null);
+      setLoading(false);
+      return;
+    }
     let active = true;
     const unsubscribe = authRepository.onAuthStateChange((_event, nextSession) => {
       if (!active) return;
@@ -43,7 +49,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, []);
 
   const value = useMemo<AuthContextValue>(() => {
-    const status: AuthStatus = loading ? 'loading' : session ? 'authenticated' : 'unauthenticated';
+    const status: AuthStatus = isVisualQaEnabled ? 'authenticated' : loading ? 'loading' : session ? 'authenticated' : 'unauthenticated';
     return {
       status,
       loading,
@@ -52,14 +58,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
       session,
       user: session?.user ?? null,
       signUp: async (email, password) => {
+        if (isVisualQaEnabled) return { data: null, error: { code: 'unknown', message: 'Sign-up is disabled in visual QA mode.' } };
         const result = await authRepository.signUp(email, password);
         return { data: result.data, error: result.error };
       },
       signIn: async (email, password) => {
+        if (isVisualQaEnabled) return { error: { code: 'unknown', message: 'Sign-in is disabled in visual QA mode.' } };
         const result = await authRepository.signIn(email, password);
         return { error: result.error };
       },
       signOut: async () => {
+        if (isVisualQaEnabled) return { error: null };
         const result = await authRepository.signOut();
         return { error: result.error };
       },
