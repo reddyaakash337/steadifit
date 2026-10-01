@@ -82,9 +82,10 @@ export function Card({ children, style, elevated = false, onPress }: PropsWithCh
 }
 
 // Buttons
-export function PrimaryButton({ children, onPress, disabled = false, loading = false }: PropsWithChildren<{ onPress?: () => void; disabled?: boolean; loading?: boolean }>) {
+export function PrimaryButton({ children, onPress, disabled = false, loading = false, accessibilityLabel }: PropsWithChildren<{ onPress?: () => void; disabled?: boolean; loading?: boolean; accessibilityLabel?: string }>) {
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{ disabled, busy: loading }}
       disabled={disabled || loading}
@@ -96,9 +97,10 @@ export function PrimaryButton({ children, onPress, disabled = false, loading = f
   );
 }
 
-export function SecondaryButton({ children, onPress, disabled = false, loading = false }: PropsWithChildren<{ onPress?: () => void; disabled?: boolean; loading?: boolean }>) {
+export function SecondaryButton({ children, onPress, disabled = false, loading = false, accessibilityLabel }: PropsWithChildren<{ onPress?: () => void; disabled?: boolean; loading?: boolean; accessibilityLabel?: string }>) {
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{ disabled, busy: loading }}
       disabled={disabled || loading}
@@ -110,9 +112,10 @@ export function SecondaryButton({ children, onPress, disabled = false, loading =
   );
 }
 
-export function GhostButton({ children, onPress, disabled = false }: PropsWithChildren<{ onPress?: () => void; disabled?: boolean }>) {
+export function GhostButton({ children, onPress, disabled = false, accessibilityLabel }: PropsWithChildren<{ onPress?: () => void; disabled?: boolean; accessibilityLabel?: string }>) {
   return (
     <Pressable
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}

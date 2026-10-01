@@ -1,3 +1,5 @@
+import type { PlanDay, PlanExercise } from '@/types/domain';
+import { createId } from '@/utils/ids';
 export type ExerciseCategory = 'Strength' | 'Cardio' | 'Flexibility' | 'Core';
 export type ExerciseDifficulty = 'Beginner' | 'Intermediate' | 'Advanced';
 export type Exercise = {
@@ -109,8 +111,6 @@ export function makePlan(frequency: number): PlanDay[] {
     })) : [],
   }));
 }
-import type { PlanDay, PlanExercise } from '@/types/domain';
-import { createId } from '@/utils/ids';
 
 export type { PlanDay } from '@/types/domain';
 export type PlannedExercise = PlanExercise;
